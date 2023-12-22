@@ -1,0 +1,10 @@
+\ Model _copy
+\ LP format - for model browsing. Use MPS format to capture full model detail.
+Minimize
+ 
+Subject To
+ R1991: - penult_0[1] + penult_activation0[4] <= 0
+Bounds
+ -infinity <= penult_0[1] <= -0.3338813483715057
+ penult_activation0[4] >= 1.197079658508301
+End
