@@ -12,6 +12,7 @@ from torch.utils.data import sampler
 
 
 import torchvision.datasets as dset
+
 def load_data(data_dir: str = "./data", num_imgs: int = 25, random: bool = False, dataset: str = 'MNIST') -> tuple:
     
     """
