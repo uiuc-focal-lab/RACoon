@@ -107,7 +107,7 @@ class BoundedModule(nn.Module):
         optimize_bound_args = {
             'enable_alpha_crown': True,  # Enable optimization of alpha.
             'enable_beta_crown': False,  # Enable beta split constraint.
-            'iteration': 30,  # Number of alpha/beta optimization iterations.
+            'iteration': 10,  # Number of alpha/beta optimization iterations.
             # Share some alpha variables to save memory at the cost of slightly
             # looser bounds.
             'use_shared_alpha': False,

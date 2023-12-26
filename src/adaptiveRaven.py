@@ -8,7 +8,8 @@ from src.adaptiveRavenResult import AdaptiveRavenResultList
 class RavenArgs:
     def __init__(self, raven_mode : RavenMode, dataset : Dataset, net_names,
                 count_per_prop=None, prop_count=None, eps=None,
-                threshold_execution=5, baseline_iteration=10,
+                threshold_execution=5, cross_executional_threshold=4, 
+                maximum_cross_execution_count=3, baseline_iteration=10,
                 refinement_iterations=30, unroll_layers = False, unroll_layer_count=3, 
                 refine_intermediate_bounds = False, dataloading_seed = 0, 
                 result_dir=None, write_file=True) -> None:
@@ -22,6 +23,8 @@ class RavenArgs:
         self.prop_count = prop_count
         self.eps = eps
         self.threshold_execution = threshold_execution
+        self.cross_executional_threshold = cross_executional_threshold
+        self.maximum_cross_execution_count = maximum_cross_execution_count
         self.baseline_iteration = baseline_iteration
         self.refinement_iterations = refinement_iterations
         self.unroll_layers = unroll_layers
