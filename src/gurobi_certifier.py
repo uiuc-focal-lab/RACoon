@@ -4,6 +4,7 @@ import numpy as np
 
 class RavenLPtransformer:
     def __init__(self, eps, inputs, batch_size, roll_indices, lb_coef, lb_bias, non_verified_indices,
+                 lb_coef_dict, lb_bias_dict,
                  lb_penultimate_coef, lb_penultimate_bias, 
                  ub_penultimate_coef, ub_penultimate_bias,
                  lb_penult, ub_penult, constraint_matrices, 
@@ -42,6 +43,14 @@ class RavenLPtransformer:
 
         self.constraint_matrices = constraint_matrices.to(self.device)
         self.disable_unrolling = disable_unrolling
+        if lb_bias_dict is not None:
+            self.lb_bias_dict = lb_bias_dict
+            self.lb_coef_dict = lb_coef_dict
+            self.process_dict()
+        else:
+            self.lb_bias_dict = None
+            self.lb_coef_dict = None
+
 
         # Gurobi model
         self.gmdl = grb.Model()
@@ -56,6 +65,17 @@ class RavenLPtransformer:
         self.penult_vars_activation = None
         self.final_ans = None
     
+    def process_dict(self):
+        for x in self.lb_coef_dict.values():
+            for coef in x:
+                coef = coef.detach().to(self.device)
+                coef = coef.view(coef.shape[0], coef.shape[1], -1)
+                coef = coef.numpy()
+
+        for x in self.lb_bias_dict.values():
+            for bias in x:
+                bias = bias.detach().to(self.device)
+                bias = bias.numpy()
 
     def input_constraints(self):
         assert self.inputs.shape[0] == self.batch_size
@@ -71,16 +91,25 @@ class RavenLPtransformer:
         # ensure all inputs are perturbed by the same uap delta.
         for i, v in enumerate(self.input_vars):
             self.gmdl.addConstr(v == self.inputs[i].detach().numpy() + delta)   
+    
+    def output_len(self):
+        if len(self.lb_coef) > 0:
+            return self.lb_coef[0].shape[0]
+        else:
+            for x in self.lb_coef_dict.values():
+                for coef in x:
+                    return coef.shape[0]
+        raise ValueError(f'Can not find length of outputs')
 
     def output_variables(self):
-        assert self.lb_coef.shape[0] == self.batch_size
-        self.output_vars = [self.gmdl.addMVar(self.lb_coef[i].shape[0], 
+        output_length = self.output_len()
+        self.output_vars = [self.gmdl.addMVar(output_length, 
                         lb=-float('inf'), ub=float('inf'),
                         vtype=grb.GRB.CONTINUOUS, name=f'output_{i}')
                         for i in range(self.batch_size)]
 
     def penultimate_varibles(self):
-        assert self.lb_penultimate_coef.shape[0] == self.batch_size            
+        # assert self.lb_penultimate_coef.shape[0] == self.batch_size            
         self.penult_vars = [self.gmdl.addMVar(self.lb_penultimate_coef[idx].shape[0], 
                         lb=self.lb_penult[idx].detach().numpy(), ub=self.ub_penult[idx].detach().numpy(),
                         vtype=grb.GRB.CONTINUOUS, name=f'penult_{i}')
@@ -149,15 +178,28 @@ class RavenLPtransformer:
             self.penultimate_constraints(final_weight=final_weight, final_bias=final_bias)
         return self
 
+    def formulate_constriants_from_dict(self, final_weight, final_bias):
+        self.input_constraints()
+        self.output_variables()
+        for i in range(self.batch_size):
+            if self.non_verified_indices is not None and i not in self.non_verified_indices:
+                continue
+            if i not in self.lb_bias_dict.keys():
+                continue
+            for j, bias in enumerate(self.lb_bias_dict[i]):
+                self.gmdl.addConstr(self.output_vars[i] >= self.lb_coef_dict[i][j].detach().cpu().numpy() @ self.input_vars[i] + bias.detach().cpu().numpy())
+        return self
+
+
 
     def handle_optimization_res(self):
         if self.gmdl.status in [2, 6, 10]:
-            print("Final MIP gap value: %f" % self.gmdl.MIPGap)
-            try:
-                print("Final MIP best value: %f" % self.final_ans.X)
-            except:
-                print("No solution obtained")
-            print("Final ObjBound: %f" % self.gmdl.ObjBound)
+            # print("Final MIP gap value: %f" % self.gmdl.MIPGap)
+            # try:
+            #     print("Final MIP best value: %f" % self.final_ans.X)
+            # except:
+            #     print("No solution obtained")
+            # print("Final ObjBound: %f" % self.gmdl.ObjBound)
             return self.gmdl.ObjBound
         else:
             if self.gmdl.status == 4:
@@ -178,8 +220,9 @@ class RavenLPtransformer:
             print("Gurobi model status", self.gmdl.status)
             print("The optimization failed\n")            
             if self.gmdl.status == 3:
-                self.gmdl.computeIIS()
-                self.gmdl.write("./debug_logs/model.ilp") 
+                # self.gmdl.computeIIS()
+                # self.gmdl.write("./debug_logs/model.ilp") 
+                pass
 
             return 0.0
 
@@ -202,7 +245,7 @@ class RavenLPtransformer:
             self.gmdl.addConstr(BIG_M * (bs[-1] - 1) <= final_var_min)
         
         self.final_ans = self.gmdl.addVar(vtype=grb.GRB.CONTINUOUS, name=f'p')
-        self.gmdl.addConstr(self.final_ans == grb.quicksum(bs[i] for i in range(self.batch_size)) / self.batch_size)
+        self.gmdl.addConstr(self.final_ans == grb.quicksum(bs[i] for i in range(self.batch_size)))
         self.gmdl.update()
         self.gmdl.setObjective(self.final_ans, grb.GRB.MINIMIZE)
         self.gmdl.optimize()

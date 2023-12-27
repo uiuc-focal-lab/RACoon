@@ -1057,7 +1057,7 @@ class BoundedModule(nn.Module):
             aux_reference_bounds=None, need_A_only=False,
             cutter=None, decision_thresh=None,
             update_mask=None, multiple_execution=False, execution_count=1, 
-            ptb=None, unperturbed_images=None):
+            ptb=None, unperturbed_images=None, iteration=None):
         r"""Main function for computing bounds.
 
         Args:
@@ -1162,6 +1162,11 @@ class BoundedModule(nn.Module):
             `A` dictionary.
         """
         logger.debug(f'Compute bounds with {method}')
+
+        if iteration is not None:
+            self.bound_opts['optimize_bound_args']['iteration'] = iteration
+            # it = self.bound_opts['optimize_bound_args']['iteration']
+            # print(f'iteration {it}')
 
         if needed_A_dict is None: needed_A_dict = {}
         if not bound_lower and not bound_upper:

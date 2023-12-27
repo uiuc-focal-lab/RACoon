@@ -404,7 +404,7 @@ def _update_best_beta(
 def get_cross_execution_params(self, x, execution_count, parameters, lr_lambda):
     assert (x[0].shape[0] % execution_count) == 0
     # distinct_parmeters = (x[0].shape[0] // execution_count)
-    lamb = torch.zeros(x[0].shape[0], dtype=torch.float, device=x[0].device, requires_grad=True)
+    lamb = torch.ones(x[0].shape[0], dtype=torch.float, device=x[0].device, requires_grad=True)
     parameters.append({'params': lamb, 'lr': lr_lambda})
     self.optimizable_lambda = lamb
 
@@ -428,12 +428,13 @@ def extract_mininum_coef(self, lb_coef, lb_bias, ptb, unperturbed_images):
 
 def cross_execution_loss_helper(self, lb_coef_updated, lb_bias_updated,
                                 execution_count, center, diff):
-    lamb = torch.sigmoid(self.optimizable_lambda)
+    lamb = torch.nn.functional.relu(self.optimizable_lambda) + 1e-17
     assert lamb.shape[0] % execution_count == 0
     # Normalize the lambda values
     lamb = lamb.view(execution_count, -1)
     lamb = lamb / (lamb.sum(dim=0) + 1e-17)
     lamb = lamb.view(-1)
+    # print(f'lambda {lamb}')
     lb_bias_updated = lb_bias_updated * lamb
     center = center * lamb
     lb_coef_updated = lamb * lb_coef_updated.T
@@ -448,8 +449,8 @@ def cross_execution_loss_helper(self, lb_coef_updated, lb_bias_updated,
     loss_bias = loss_bias.view(execution_count, -1)    
     loss_bias = loss_bias.sum(dim=0)
     loss = loss_bias - loss
-    # print(f'loss {loss}')
-    return loss.sum()
+    # print(f'cross exec loss {loss}')
+    return loss
 
 
 def get_cross_execution_loss(self, lb_coef, lb_bias, execution_count, ptb, unperturbed_images):
@@ -687,9 +688,12 @@ def get_optimized_bounds(
             # print(f'lb coef shape {lb_coef.shape}')
             # print(f'lb bias shape {lb_bias.shape}')
             # ret_l = _compute_lb(lb_coef, lb_bias, ptb, unperturbed_images)
+            # print(f'lower bound {ret_l.detach().min(dim=1)[0]}')
             cross_execution_loss = self.get_cross_execution_loss(lb_coef, lb_bias, execution_count, ptb, unperturbed_images)
-            cross_execution_loss = - cross_execution_loss
-            # print(f'cross_execution_loss {-cross_execution_loss}')
+            if i == iteration - 1:
+                print(f'cross_execution_loss {cross_execution_loss}')
+            cross_execution_loss = - cross_execution_loss.sum()
+
         else:
             cross_execution_loss = None
             # print(f'lower bound {ret_l.min(dim=1)}')
