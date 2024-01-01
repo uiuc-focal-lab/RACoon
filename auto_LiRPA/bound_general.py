@@ -63,13 +63,13 @@ class BoundedModule(nn.Module):
             'sparse_features_alpha': True,
             'sparse_spec_alpha': False,
             'minimum_sparsity': 1.0,
-            'enable_opt_interm_bounds': False,
+            'enable_opt_interm_bounds': True,
             'crown_batch_size': np.inf,
             'forward_refinement': False,
             'dynamic_forward': False,
             'forward_max_dim': int(1e9),
             # Do not share alpha for conv layers.
-            'use_full_conv_alpha': True,
+            'use_full_conv_alpha': False,
             # Threshold for number of unstable neurons for each layer to disable
             #  use_full_conv_alpha.
             'use_full_conv_alpha_thresh': 512,
@@ -92,6 +92,8 @@ class BoundedModule(nn.Module):
         self.ibp_lower, self.ibp_upper = None, None
 
         self.optimizable_activations = []
+        self.optimize_layers_bounds = []
+        self.track_bounds = False
         self.relus = []  # save relu layers for convenience
 
         state_dict_copy = copy.deepcopy(model.state_dict())
@@ -120,8 +122,9 @@ class BoundedModule(nn.Module):
             # Save best results of alpha/beta/bounds during optimization.
             'keep_best': True,
             # Only optimize bounds of last layer during alpha/beta CROWN.
-            'fix_intermediate_layer_bounds': True,
+            'fix_intermediate_layer_bounds': False,
             # Learning rate for the optimizable parameter alpha in alpha-CROWN.
+            # 'lr_alpha': 0.5,
             'lr_alpha': 0.5,
             # Learning rate for the optimizable parameter beta in beta-CROWN.
             'lr_beta': 0.05,
@@ -199,6 +202,9 @@ class BoundedModule(nn.Module):
     
     def set_input_node_name(self, input_node_name):
         self.input_node_name = input_node_name
+
+    def set_optimize_layers_bounds(self, optimize_layers_bounds):
+        self.optimize_layers_bounds = optimize_layers_bounds
 
     def get_perturbed_optimizable_activations(self):
         return [n for n in self.optimizable_activations if n.perturbed]
@@ -530,6 +536,12 @@ class BoundedModule(nn.Module):
         self.perturbed_optimizable_activations = (
                 self.get_perturbed_optimizable_activations())
         return
+    
+    def _clear_stale_bounds(self):
+        for l in self._modules.values():
+            for attr in ['backup_lower', 'backup_upper']:
+                if hasattr(l, attr):
+                    delattr(l, attr)
 
     def _clear_and_set_new(
             self, intermediate_layer_bounds, clear_forward_only=False,
@@ -551,6 +563,13 @@ class BoundedModule(nn.Module):
                 for attr in [
                         'lower', 'upper', 'interval', 'forward_value', 'd',
                         'lA', 'lower_d']:
+                    if attr in ['lower', 'upper'] and l.name in self.optimize_layers_bounds and self.track_bounds:
+                        if hasattr(l, attr):
+                            # print(f'set attribute lower')
+                            if attr == 'lower':
+                                l.backup_lower = l.lower.detach()
+                            else:
+                                l.backup_upper = l.upper.detach()
                     if hasattr(l, attr):
                         delattr(l, attr)
 
@@ -558,7 +577,7 @@ class BoundedModule(nn.Module):
                     'zero_backward_coeffs_l', 'zero_backward_coeffs_u',
                     'zero_lA_mtx', 'zero_uA_mtx']:
                 setattr(l, attr, False)
-            # Given an interval here to make IBP/CROWN start from this node
+            # Given an interval here to make IBP/CROWN start from this node                
             if (intermediate_layer_bounds is not None
                     and l.name in intermediate_layer_bounds.keys()):
                 l.interval = tuple(intermediate_layer_bounds[l.name][:2])
@@ -881,9 +900,10 @@ class BoundedModule(nn.Module):
         if self.verbose:
             logger.info('Model converted to support bounds')
 
-    def check_prior_bounds(self, node):
+    def check_prior_bounds(self, node, baseline_refined_bound={}):
         if node.prior_checked or not (node.used and node.perturbed):
             return
+        # print(f'prior bounds {node.name}')
         for n in node.inputs:
             self.check_prior_bounds(n)
         for i in getattr(node, 'requires_input_bounds', []):
@@ -891,7 +911,7 @@ class BoundedModule(nn.Module):
                 node.inputs[i], prior_checked=True)
         node.prior_checked = True
 
-    def compute_intermediate_bounds(self, node, prior_checked=False):
+    def compute_intermediate_bounds(self, node, prior_checked=False, baseline_refined_bound={}):
         if getattr(node, 'lower', None) is not None:
             return
 
@@ -912,6 +932,7 @@ class BoundedModule(nn.Module):
             return
 
         reference_bounds = self.reference_bounds
+
 
         if self.use_forward:
             node.lower, node.upper = self.forward_general(
@@ -976,19 +997,36 @@ class BoundedModule(nn.Module):
                     node, sparse_intermediate_bounds,
                     ref_intermediate_lb, ref_intermediate_ub)
                 newC, reduced_dim, unstable_idx, unstable_size = sparse_C
-
+                
                 if unstable_idx is None or unstable_size > 0:
                     if self.return_A:
-                        node.lower, node.upper, _ = self.backward_general(
+                        low_bnd, upper_bound, _ = self.backward_general(
                             C=newC, node=node, unstable_idx=unstable_idx,
                             unstable_size=unstable_size)
                     else:
                         # Compute backward bounds only when there are unstable
                         # neurons, or when we don't know which neurons are unstable.
-                        node.lower, node.upper = self.backward_general(
+                        low_bnd, upper_bound = self.backward_general(
                             C=newC, node=node, unstable_idx=unstable_idx,
                             unstable_size=unstable_size)
-
+                    # if hasattr(node, 'backup_lower') and hasattr(node, 'backup_upper'):
+                    #     # print(f'Updated bounds {node.name}')
+                    #     # print(f'backup shape {node.backup_lower.shape} shape {low_bnd.shape}')
+                    #     node.lower = torch.max(node.backup_lower, low_bnd.detach())
+                    #     node.upper = torch.min(node.backup_upper, upper_bound.detach())
+                    # else:
+                    #     node.lower, node.upper = low_bnd.detach(), upper_bound.detach()
+                    if hasattr(node, 'backup_lower') and hasattr(node, 'backup_upper'):
+                        # print(f'Updated bounds {node.name}')
+                        # print(f'backup shape {node.backup_lower.shape} shape {low_bnd.shape}')
+                        node.lower = torch.max(node.backup_lower, low_bnd)
+                        node.upper = torch.min(node.backup_upper, upper_bound)
+                    else:
+                        node.lower, node.upper = low_bnd, upper_bound
+                    if node.name in baseline_refined_bound.keys():
+                        bnds = baseline_refined_bound[node.name]
+                        node.lower = torch.max(bnds[0], node.lower)
+                        node.upper = torch.min(bnds[0], node.upper)
                 if reduced_dim:
                     self.restore_sparse_bounds(
                         node, unstable_idx, unstable_size,
@@ -1057,7 +1095,7 @@ class BoundedModule(nn.Module):
             aux_reference_bounds=None, need_A_only=False,
             cutter=None, decision_thresh=None,
             update_mask=None, multiple_execution=False, execution_count=1, 
-            ptb=None, unperturbed_images=None, iteration=None):
+            ptb=None, unperturbed_images=None, iteration=None, baseline_refined_bound={}):
         r"""Main function for computing bounds.
 
         Args:
@@ -1163,6 +1201,9 @@ class BoundedModule(nn.Module):
         """
         logger.debug(f'Compute bounds with {method}')
 
+        if method != 'backward' or not self.track_bounds:
+            self._clear_stale_bounds()
+        
         if iteration is not None:
             self.bound_opts['optimize_bound_args']['iteration'] = iteration
             # it = self.bound_opts['optimize_bound_args']['iteration']
@@ -1206,7 +1247,7 @@ class BoundedModule(nn.Module):
                     final_node_name=final_node_name,
                     cutter=cutter, decision_thresh=decision_thresh, 
                     multiple_execution=multiple_execution, execution_count=execution_count, 
-                    ptb=ptb, unperturbed_images=unperturbed_images)
+                    ptb=ptb, unperturbed_images=unperturbed_images, baseline_refined_bound=baseline_refined_bound)
             if bound_upper:
                 ret2 = self.get_optimized_bounds(
                     x=x, C=C, method=method,
@@ -1218,7 +1259,7 @@ class BoundedModule(nn.Module):
                     final_node_name=final_node_name,
                     cutter=cutter, decision_thresh=decision_thresh, 
                     multiple_execution=multiple_execution, execution_count=execution_count,
-                    ptb=ptb, unperturbed_images=unperturbed_images)
+                    ptb=ptb, unperturbed_images=unperturbed_images, baseline_refined_bound=baseline_refined_bound)
             if bound_lower and bound_upper:
                 if return_A:
                     # Needs to merge the A dictionary.
@@ -1351,7 +1392,7 @@ class BoundedModule(nn.Module):
         self.aux_reference_bounds = aux_reference_bounds
         self.final_node_name = final.name
 
-        self.check_prior_bounds(final)
+        self.check_prior_bounds(final, baseline_refined_bound=baseline_refined_bound)
 
         if method == 'backward':
             # This is for the final output bound.
@@ -1412,7 +1453,8 @@ class BoundedModule(nn.Module):
         get_unstable_locations, batched_backward)
     from .optimized_bounds import (
         get_optimized_bounds, init_slope, get_cross_execution_params,
-        extract_mininum_coef, get_cross_execution_loss, cross_execution_loss_helper) 
+        extract_mininum_coef, get_cross_execution_loss, 
+        cross_execution_loss_helper, print_bound_updates) 
     from .beta_crown import (
         beta_bias, save_best_intermediate_betas,
         print_optimized_beta)

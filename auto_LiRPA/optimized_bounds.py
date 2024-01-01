@@ -346,6 +346,7 @@ def _update_optimizable_activations(
         # Update best intermediate layer bounds only when they are optimized.
         # If they are already fixed in intermediate_layer_bounds, then do
         # nothing.
+        # print(f'intermediate_layer_bounds {intermediate_layer_bounds}')
         if (intermediate_layer_bounds is None
                 or node.inputs[0].name not in intermediate_layer_bounds
                 or not fix_intermediate_layer_bounds):
@@ -482,6 +483,15 @@ def get_cross_execution_loss(self, lb_coef, lb_bias, execution_count, ptb, unper
     return loss
 
 
+def print_bound_updates(self, optimizable_activations):
+    if optimizable_activations is None or len(optimizable_activations) <= 0:
+        return
+    with torch.no_grad():
+        node = optimizable_activations[-1]
+        bnd_diff = (node.inputs[0].upper - node.inputs[0].lower).sum()
+        print(f'bound diff {node.name} {bnd_diff}')
+
+
 def get_optimized_bounds(
         self, x=None, aux=None, C=None, IBP=False, forward=False,
         method='backward', bound_lower=True, bound_upper=False,
@@ -490,7 +500,7 @@ def get_optimized_bounds(
         aux_reference_bounds=None, needed_A_dict=None, cutter=None,
         decision_thresh=None, epsilon_over_decision_thresh=1e-4,
         multiple_execution=False, execution_count=1, 
-        ptb=None, unperturbed_images=None):
+        ptb=None, unperturbed_images=None, baseline_refined_bound={}):
     """
     Optimize CROWN lower/upper bounds by alpha and/or beta.
     """
@@ -521,7 +531,7 @@ def get_optimized_bounds(
     start_save_best = opts['start_save_best']
     multi_spec_keep_func = opts['multi_spec_keep_func']
     enable_opt_interm_bounds = self.bound_opts.get(
-        'enable_opt_interm_bounds', False)
+        'enable_opt_interm_bounds', True)
     sparse_intermediate_bounds = self.bound_opts.get(
         'sparse_intermediate_bounds', False)
     verbosity = self.bound_opts['verbosity']
@@ -610,14 +620,21 @@ def get_optimized_bounds(
     # record the overhead due to extra operations from pruning-in-iteration
     pruning_time = 0.
 
+    # print(f'Fixing intermediate bounds {fix_intermediate_layer_bounds}')
     need_grad = True
     patience = 0
+
+    # Before starting optimization clear any stale bounds.
+    self._clear_stale_bounds()
+    
     for i in range(iteration):
         if cutter:
             # cuts may be optimized by cutter
             self.cut_module = cutter.cut_module
 
         intermediate_constr = None
+        if i > 0:
+            self.track_bounds = True 
 
         if not fix_intermediate_layer_bounds:
             # If we still optimize all intermediate neurons, we can use
@@ -677,10 +694,11 @@ def get_optimized_bounds(
                 needed_A_dict=needed_A_dict,
                 update_mask=preserve_mask,
                 multiple_execution=multiple_execution, execution_count=execution_count, 
-                ptb=ptb, unperturbed_images=unperturbed_images)
+                ptb=ptb, unperturbed_images=unperturbed_images, 
+                baseline_refined_bound=baseline_refined_bound)
 
         ret_l, ret_u = ret[0], ret[1]
-
+        # print(f'lower bound {ret_l.detach().min(dim=1)[0]}')
         # print(f'final node name {self.final_name} input node name {self.input_node_name}')
         if len(ret) > 2 and multiple_execution: 
             lb_coef = ret[2]["final_coef"]['Final_Backprop_ANS']['lA']
@@ -688,7 +706,6 @@ def get_optimized_bounds(
             # print(f'lb coef shape {lb_coef.shape}')
             # print(f'lb bias shape {lb_bias.shape}')
             # ret_l = _compute_lb(lb_coef, lb_bias, ptb, unperturbed_images)
-            # print(f'lower bound {ret_l.detach().min(dim=1)[0]}')
             cross_execution_loss = self.get_cross_execution_loss(lb_coef, lb_bias, execution_count, ptb, unperturbed_images)
             if i == iteration - 1:
                 print(f'cross_execution_loss {cross_execution_loss}')
@@ -745,6 +762,7 @@ def get_optimized_bounds(
         full_l = l
         full_ret = ret
 
+        # self.print_bound_updates(optimizable_activations)
         # positive domains may already be filtered out, so we use all domains -
         # negative domains to compute
         if decision_thresh is not None:
@@ -948,9 +966,13 @@ def get_optimized_bounds(
             # we do not need to update parameters in the last step since the
             # best result already obtained
             if multiple_execution:
-                cross_execution_loss.backward()
+                cross_execution_loss.backward(retain_graph=True)
             else:
-                loss.backward()
+                loss.backward(retain_graph=True)
+            # if multiple_execution:
+            #     cross_execution_loss.backward()
+            # else:
+            #     loss.backward()
             # All intermediate variables are not needed at this point.
             self._clear_and_set_new(None)
             if opt_choice == 'adam-autolr':
@@ -1107,7 +1129,8 @@ def get_optimized_bounds(
                 '/', full_l.numel(), '=', now_pruning_ratio)
         pruning_time += time.time() - stime
         print('pruning-in-iteration extra time:', pruning_time)
-
+    
+    self.track_bounds = False
     return best_ret
 
 
@@ -1139,6 +1162,7 @@ def init_slope(
         # this set the "perturbed" property
         self._set_input(
             *x, intermediate_layer_bounds=intermediate_layer_bounds)
+        self._clear_stale_bounds()
 
         final = self.final_node(
         ) if final_node_name is None else self[final_node_name]

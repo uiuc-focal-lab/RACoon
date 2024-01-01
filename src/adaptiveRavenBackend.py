@@ -38,12 +38,16 @@ class AdaptiveRavenBackend:
         self.final_layer_biases = []
         self.refinement_indices = None
         self.cross_executional_indices = None
+        self.layer_names = []
+        self.optimize_layer_names = []
         # self.indices_for_2 = None
         # self.indices_for_3 = None
         # self.indices_for_4 = None
         self.indices_for = {}
         self.lb_coef_dict = {}
         self.lb_bias_dict = {}
+        # Store reference bounds if bounds are refined.
+        self.refined_bounds = {}
 
     def populate_names(self):
         for model in self.bounded_models:
@@ -54,6 +58,7 @@ class AdaptiveRavenBackend:
                     self.input_names.append(node_name)
                 i += 1
                 if type(node) in [BoundLinear, BoundConv]:
+                    self.layer_names.append(node_name)
                     last_name = node_name
             assert last_name is not None
             self.final_names.append(node_name)
@@ -66,14 +71,23 @@ class AdaptiveRavenBackend:
             self.final_layer_weights.append(net[-1].weight.to(self.device))
             self.final_layer_biases.append(net[-1].bias.to(self.device))
             self.bounded_models.append(BoundedModule(self.torch_models[-1], (self.prop.inputs)))
-        self.ptb = PerturbationLpNorm(norm = np.inf, eps = self.prop.eps)
+            # print(self.bounded_models[-1])
         self.populate_names()
+        if self.args.refine_intermediate_bounds:
+            assert self.args.optimize_layers_count is not None
+            assert self.layer_names is not None
+            length = min(self.args.optimize_layers_count, len(self.layer_names) - 1)
+            self.optimize_layer_names = self.layer_names[-(length+1):-1]
+            for model in self.bounded_models:
+                model.set_optimize_layers_bounds(self.optimize_layer_names)
 
     def shift_to_device(self, device, indices=None):
         # print(f'device {device}')
         self.prop.inputs = self.prop.inputs.to(device)
         self.prop.labels = self.prop.labels.to(device)
         self.prop.constraint_matrices = self.prop.constraint_matrices.to(device)
+        self.prop.lbs = self.prop.lbs.to(device)
+        self.prop.ubs = self.prop.ubs.to(device)
         if indices is not None:
             indices = indices.to(device)
         # print(f'input device {self.prop.inputs.device}')
@@ -81,6 +95,9 @@ class AdaptiveRavenBackend:
             model = model.to(device) 
             # self.final_layer_weights[i] = self.final_layer_weights[i].to(device)
             # self.final_layer_biases[i].to(device)
+        for _, element in self.refined_bounds.items():
+            for x in element:
+                x = x.to(device)
     
     @torch.no_grad()
     def get_coef_bias_baseline(self, override_device=None):
@@ -88,7 +105,7 @@ class AdaptiveRavenBackend:
             self.shift_to_device(device=override_device)
         else:
             self.shift_to_device(device=self.device)
-
+        self.ptb = PerturbationLpNorm(norm = np.inf, x_L=self.prop.lbs, x_U=self.prop.ubs)
         bounded_images = BoundedTensor(self.prop.inputs, self.ptb)
         coef_dict = { self.final_names[0]: [self.input_names[0]]}
         for model in self.bounded_models:
@@ -122,16 +139,37 @@ class AdaptiveRavenBackend:
         final_indices = util.generate_indices(indices=indices, threshold=self.args.threshold_execution, count=count)
         return final_indices
 
+    def store_refined_bounds(self):
+        for model in self.bounded_models:
+            for node_name, node in model._modules.items():
+                pass
+                # if node_name in self.optimize_layer_names:
+                #     self.refined_bounds[node_name] = [node.lower.clone().detach(), node.upper.clone().detach()]
+                #     print(f'lb shape {self.refined_bounds[node_name][0].shape}')
+                #     print(f'ub shape {self.refined_bounds[node_name][1].shape}')
+
     def run_refinement(self, indices, device, multiple_execution=False, execution_count=None, iteration=None):
         self.shift_to_device(device=device, indices=indices)
         filtered_inputs = self.prop.inputs[indices]
-        bounded_images = BoundedTensor(filtered_inputs, self.ptb)
+        filtered_lbs, filtered_ubs = self.prop.lbs[indices], self.prop.ubs[indices]
+        filtered_ptb = PerturbationLpNorm(norm = np.inf, x_L=filtered_lbs, x_U=filtered_ubs)
+        filtered_dict = {}
+        for key, element in self.refined_bounds.items():
+            if key not in filtered_dict.keys():
+                filtered_dict[key] = []
+            for x in element:
+                filtered_dict[key].append(x[indices])
+            print(f'{key} : lb shape {filtered_dict[key][0].shape}')
+            print(f'{key} : ub shape {filtered_dict[key][1].shape}')
+
+        bounded_images = BoundedTensor(filtered_inputs, filtered_ptb)
         filtered_constraint_matrices = self.prop.constraint_matrices[indices]
         coef_dict = {self.final_names[0]: [self.input_names[0]]}
         for model in self.bounded_models:
             result = model.compute_bounds(x=(bounded_images,), method=self.optimized_method, C=filtered_constraint_matrices,
                                            bound_upper=False, return_A=True, needed_A_dict=coef_dict, 
-                                           multiple_execution=multiple_execution, execution_count=execution_count, ptb=self.ptb, 
+                                        #    reference_bounds=filtered_dict,
+                                           multiple_execution=multiple_execution, execution_count=execution_count, ptb=filtered_ptb, 
                                            unperturbed_images = filtered_inputs, iteration=iteration)
             lower_bnd, _, A_dict = result
             lA = A_dict[self.final_names[0]][self.input_names[0]]['lA']
@@ -177,6 +215,8 @@ class AdaptiveRavenBackend:
         lb_coef = lb_coef.detach()
         lb_bias = lb_bias.detach()
         for i, ind in enumerate(indices):
+            if type(ind) is torch.Tensor:
+                ind = ind.item()
             if ind not in self.lb_bias_dict.keys():
                 self.lb_coef_dict[ind] = []
                 self.lb_bias_dict[ind] = []
@@ -192,7 +232,8 @@ class AdaptiveRavenBackend:
             self.shift_to_device(device=self.device)
         lA, lbias, lower_bnd = self.run_refinement(indices=self.refinement_indices, device=self.device, iteration=self.args.baseline_iteration)
         print(f'individual refinement lower bound {lower_bnd.detach().cpu().min(axis=1)[0]}')
-        
+        self.store_refined_bounds()
+
         self.cross_executional_indices = self.select_indices(lower_bound=lower_bnd, threshold=self.args.cross_executional_threshold)
         self.cross_executional_indices = self.refinement_indices[self.cross_executional_indices]
         self.cross_executional_refinement(cross_executional_indices=self.cross_executional_indices)
@@ -219,7 +260,8 @@ class AdaptiveRavenBackend:
                                          lb_coef_dict=self.lb_coef_dict, lb_bias_dict=self.lb_bias_dict, non_verified_indices=None,
                                          lb_penultimate_coef=None, lb_penultimate_bias=None, ub_penultimate_coef=None,
                                          ub_penultimate_bias=None, lb_penult=None, ub_penult=None,
-                                         constraint_matrices=self.prop.constraint_matrices, disable_unrolling=True)
+                                         constraint_matrices=self.prop.constraint_matrices,
+                                         input_lbs=self.prop.lbs, input_ubs=self.prop.ubs, disable_unrolling=True)
         baseline_accuracy = milp_verifier.formulate_constriants_from_dict(final_weight=self.final_layer_weights[0],
                                                         final_bias=self.final_layer_biases[0]).solv_MILP() / self.args.count_per_prop * 100
         print(f'Baseline certified accuracy {baseline_accuracy}')
@@ -241,6 +283,13 @@ class AdaptiveRavenBackend:
             elif i in all_cross_execution_indices:
                 final_indices.append(i)
         return torch.tensor(final_indices, device='cpu')
+    
+    def read_dict(self):
+        print(f'keys {self.lb_coef_dict.keys()}')
+        print(f'refinement index {self.refinement_indices}')
+        print(f'cross execution indices {self.cross_executional_indices}')
+        for key in self.lb_coef_dict.keys():
+            print(f'{key} : {len(self.lb_coef_dict[key])}')
 
     def get_refined_res(self):
         torch.cuda.empty_cache()
@@ -250,17 +299,21 @@ class AdaptiveRavenBackend:
         individual_refinement_count = self.get_verified_count(lower_bnd=lower_bnd) + self.individual_verified
         individual_refinement_accuracy = individual_refinement_count / self.args.count_per_prop * 100
         individual_refinement_time = time.time() - start_time
-        print(f'lower bound {lower_bnd.min(axis=1)[0]}')
+        print(f'lower bound {lower_bnd.min(axis=1)[0].sort(descending=True)[0]}')
         print(f'Individual refinement certified accuracy {individual_refinement_accuracy}')
+        lp_indices = self.get_post_refinement_unverified_indices(refined_lower_bound=lower_bnd)
+        # print(f'indices for refinement {lp_indices}')
+        # self.read_dict()
         milp_verifier = RavenLPtransformer(eps=self.prop.eps, inputs=self.prop.inputs, batch_size=self.args.count_per_prop,
                                          roll_indices=None, lb_coef=lA, lb_bias=lbias, lb_coef_dict=self.lb_coef_dict, lb_bias_dict=self.lb_bias_dict,
-                                         non_verified_indices=self.get_post_refinement_unverified_indices(refined_lower_bound=lower_bnd),
+                                         non_verified_indices=lp_indices,
                                          lb_penultimate_coef=None, lb_penultimate_bias=None, ub_penultimate_coef=None,
                                          ub_penultimate_bias=None, lb_penult=None, ub_penult=None,
-                                         constraint_matrices=self.prop.constraint_matrices, disable_unrolling=True)
+                                         constraint_matrices=self.prop.constraint_matrices, 
+                                         input_lbs=self.prop.lbs, input_ubs=self.prop.ubs, disable_unrolling=True)
         final_count = milp_verifier.formulate_constriants_from_dict(final_weight=self.final_layer_weights[0],
                                                         final_bias=self.final_layer_biases[0]).solv_MILP()
-        print(f'final count {final_count}')
+        print(f'final lb {final_count}')
         final_count += individual_refinement_count
         final_accuracy = final_count / self.args.count_per_prop * 100.0
         print(f'Final certified accuracy {final_accuracy}')
@@ -276,4 +329,11 @@ class AdaptiveRavenBackend:
         # Get the baseline results.
         self.get_baseline_res()
         # Get the final results.
-        self.get_refined_res()
+        if self.individual_verified == self.args.count_per_prop:
+            self.individual_refinement_res = self.individual_res
+            self.final_res = self.baseline_res
+        else:
+            self.get_refined_res()
+        return AdaptiveRavenResult(individual_res=self.individual_res, baseline_res=self.baseline_res,
+                                   individual_refinement_res=self.individual_refinement_res,
+                                   cross_executional_refinement_res=self.final_res, final_res=self.final_res)

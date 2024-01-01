@@ -7,13 +7,17 @@ class RavenLPtransformer:
                  lb_coef_dict, lb_bias_dict,
                  lb_penultimate_coef, lb_penultimate_bias, 
                  ub_penultimate_coef, ub_penultimate_bias,
-                 lb_penult, ub_penult, constraint_matrices, 
+                 lb_penult, ub_penult, constraint_matrices,
+                 input_lbs, input_ubs,
                  disable_unrolling=False):
         def reshape(t):
             t = t.view(t.shape[0], t.shape[1], -1)
             return t
         self.device = 'cpu'
+        if type(eps) is torch.Tensor:
+            eps = torch.max(eps).item() 
         self.eps = eps
+
         self.inputs = inputs.to(self.device)
         self.batch_size = batch_size
         if roll_indices is not None:
@@ -42,6 +46,8 @@ class RavenLPtransformer:
             self.ub_penult = None
 
         self.constraint_matrices = constraint_matrices.to(self.device)
+        self.input_lbs = input_lbs.view(input_lbs.shape[0], -1).detach().to(self.device)
+        self.input_ubs = input_ubs.view(input_ubs.shape[0], -1).detach().to(self.device)
         self.disable_unrolling = disable_unrolling
         if lb_bias_dict is not None:
             self.lb_bias_dict = lb_bias_dict
@@ -84,8 +90,8 @@ class RavenLPtransformer:
             return
         delta = self.gmdl.addMVar(self.inputs[0].shape[0], lb = -self.eps, ub = self.eps, vtype=grb.GRB.CONTINUOUS, name='uap_delta')
         self.input_vars = [self.gmdl.addMVar(self.inputs[i].shape[0], 
-                                lb = self.inputs[i].detach().numpy() - self.eps,
-                                ub = self.inputs[i].detach().numpy() + self.eps,
+                                lb = self.input_lbs[i].detach().numpy(),
+                                ub = self.input_ubs[i].detach().numpy(),
                                 vtype=grb.GRB.CONTINUOUS, name=f'input_{i}')
                                 for i in range(self.batch_size)]
         # ensure all inputs are perturbed by the same uap delta.
@@ -238,11 +244,13 @@ class RavenLPtransformer:
             bs.append(self.gmdl.addVar(vtype=grb.GRB.BINARY, name=f'b{i}'))
             # Binary encoding (Big M formulation )
 
-            # Force bs[-1] to be '1' when t_min > 0
-            self.gmdl.addConstr(BIG_M * bs[-1] >= final_var_min)
+            # # Force bs[-1] to be '1' when t_min > 0
+            # self.gmdl.addConstr(BIG_M * bs[-1] >= final_var_min)
 
-            # Force bs[-1] to be '0' when t_min < 0 or -t_min  > 0
-            self.gmdl.addConstr(BIG_M * (bs[-1] - 1) <= final_var_min)
+            # # Force bs[-1] to be '0' when t_min < 0 or -t_min  > 0
+            # self.gmdl.addConstr(BIG_M * (bs[-1] - 1) <= final_var_min)
+            self.gmdl.addGenConstrIndicator(bs[-1], True, final_var_min >= -1e-10)
+            self.gmdl.addGenConstrIndicator(bs[-1], False, final_var_min <= -1e-10)
         
         self.final_ans = self.gmdl.addVar(vtype=grb.GRB.CONTINUOUS, name=f'p')
         self.gmdl.addConstr(self.final_ans == grb.quicksum(bs[i] for i in range(self.batch_size)))
