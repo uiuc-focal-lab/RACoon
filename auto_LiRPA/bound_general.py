@@ -77,6 +77,7 @@ class BoundedModule(nn.Module):
         }
         default_bound_opts.update(bound_opts)
         self.bound_opts = default_bound_opts
+        print('all alpha {}'.format(self.bound_opts['use_full_conv_alpha']))
         self.verbose = verbose
         self.custom_ops = custom_ops if custom_ops is not None else {}
         if device == 'auto':
@@ -900,25 +901,33 @@ class BoundedModule(nn.Module):
         if self.verbose:
             logger.info('Model converted to support bounds')
 
-    def check_prior_bounds(self, node, baseline_refined_bound={}):
+    def check_prior_bounds(self, node, baseline_refined_bound={}, 
+                           intermediate_bound_refinement=False):
         if node.prior_checked or not (node.used and node.perturbed):
             return
         # print(f'prior bounds {node.name}')
         for n in node.inputs:
-            self.check_prior_bounds(n)
+            self.check_prior_bounds(n, 
+                                baseline_refined_bound=baseline_refined_bound,
+                                intermediate_bound_refinement=intermediate_bound_refinement)
         for i in getattr(node, 'requires_input_bounds', []):
             self.compute_intermediate_bounds(
-                node.inputs[i], prior_checked=True)
+                node.inputs[i], prior_checked=True, 
+                baseline_refined_bound=baseline_refined_bound,
+                intermediate_bound_refinement=intermediate_bound_refinement)
         node.prior_checked = True
 
-    def compute_intermediate_bounds(self, node, prior_checked=False, baseline_refined_bound={}):
+    def compute_intermediate_bounds(self, node, prior_checked=False, 
+                                    baseline_refined_bound={}, intermediate_bound_refinement=False):
         if getattr(node, 'lower', None) is not None:
             return
 
         logger.debug(f'Getting the bounds of {node}')
 
         if not prior_checked:
-            self.check_prior_bounds(node)
+            self.check_prior_bounds(node, 
+                                    baseline_refined_bound=baseline_refined_bound,
+                                     intermediate_bound_refinement=intermediate_bound_refinement)
 
         if not node.perturbed:
             fv = self.get_forward_value(node)
@@ -1009,13 +1018,10 @@ class BoundedModule(nn.Module):
                         low_bnd, upper_bound = self.backward_general(
                             C=newC, node=node, unstable_idx=unstable_idx,
                             unstable_size=unstable_size)
-                    # if hasattr(node, 'backup_lower') and hasattr(node, 'backup_upper'):
-                    #     # print(f'Updated bounds {node.name}')
-                    #     # print(f'backup shape {node.backup_lower.shape} shape {low_bnd.shape}')
-                    #     node.lower = torch.max(node.backup_lower, low_bnd.detach())
-                    #     node.upper = torch.min(node.backup_upper, upper_bound.detach())
-                    # else:
-                    #     node.lower, node.upper = low_bnd.detach(), upper_bound.detach()
+
+                    if not intermediate_bound_refinement:
+                        low_bnd, upper_bound = low_bnd.detach(), upper_bound.detach()
+
                     if hasattr(node, 'backup_lower') and hasattr(node, 'backup_upper'):
                         # print(f'Updated bounds {node.name}')
                         # print(f'backup shape {node.backup_lower.shape} shape {low_bnd.shape}')
@@ -1026,7 +1032,7 @@ class BoundedModule(nn.Module):
                     if node.name in baseline_refined_bound.keys():
                         bnds = baseline_refined_bound[node.name]
                         node.lower = torch.max(bnds[0], node.lower)
-                        node.upper = torch.min(bnds[0], node.upper)
+                        node.upper = torch.min(bnds[1], node.upper)
                 if reduced_dim:
                     self.restore_sparse_bounds(
                         node, unstable_idx, unstable_size,
@@ -1085,6 +1091,17 @@ class BoundedModule(nn.Module):
                 }
         return merged_A
 
+    def detach_bounds(self):
+        for _, node in self._modules.items():
+            if hasattr(node, 'lower'):
+                if type(node.lower) is torch.Tensor:
+                    node.lower = node.lower.detach()
+
+            if hasattr(node, 'upper'):
+                if type(node.upper) is torch.Tensor:
+                    node.upper = node.upper.detach()
+
+
     def compute_bounds(
             self, x=None, aux=None, C=None, method='backward', IBP=False,
             forward=False, bound_lower=True, bound_upper=True, reuse_ibp=False,
@@ -1095,7 +1112,8 @@ class BoundedModule(nn.Module):
             aux_reference_bounds=None, need_A_only=False,
             cutter=None, decision_thresh=None,
             update_mask=None, multiple_execution=False, execution_count=1, 
-            ptb=None, unperturbed_images=None, iteration=None, baseline_refined_bound={}):
+            ptb=None, unperturbed_images=None, iteration=None, 
+            baseline_refined_bound={}, intermediate_bound_refinement=False):
         r"""Main function for computing bounds.
 
         Args:
@@ -1203,7 +1221,7 @@ class BoundedModule(nn.Module):
 
         if method != 'backward' or not self.track_bounds:
             self._clear_stale_bounds()
-        
+
         if iteration is not None:
             self.bound_opts['optimize_bound_args']['iteration'] = iteration
             # it = self.bound_opts['optimize_bound_args']['iteration']
@@ -1247,7 +1265,9 @@ class BoundedModule(nn.Module):
                     final_node_name=final_node_name,
                     cutter=cutter, decision_thresh=decision_thresh, 
                     multiple_execution=multiple_execution, execution_count=execution_count, 
-                    ptb=ptb, unperturbed_images=unperturbed_images, baseline_refined_bound=baseline_refined_bound)
+                    ptb=ptb, unperturbed_images=unperturbed_images, 
+                    baseline_refined_bound=baseline_refined_bound, 
+                    intermediate_bound_refinement=intermediate_bound_refinement)
             if bound_upper:
                 ret2 = self.get_optimized_bounds(
                     x=x, C=C, method=method,
@@ -1259,7 +1279,10 @@ class BoundedModule(nn.Module):
                     final_node_name=final_node_name,
                     cutter=cutter, decision_thresh=decision_thresh, 
                     multiple_execution=multiple_execution, execution_count=execution_count,
-                    ptb=ptb, unperturbed_images=unperturbed_images, baseline_refined_bound=baseline_refined_bound)
+                    ptb=ptb, unperturbed_images=unperturbed_images, 
+                    baseline_refined_bound=baseline_refined_bound,
+                    intermediate_bound_refinement=intermediate_bound_refinement)
+
             if bound_lower and bound_upper:
                 if return_A:
                     # Needs to merge the A dictionary.
@@ -1392,7 +1415,10 @@ class BoundedModule(nn.Module):
         self.aux_reference_bounds = aux_reference_bounds
         self.final_node_name = final.name
 
-        self.check_prior_bounds(final, baseline_refined_bound=baseline_refined_bound)
+        # print(f'bound dict keys {baseline_refined_bound.keys()}')
+        self.check_prior_bounds(final, 
+                                baseline_refined_bound=baseline_refined_bound,
+                                intermediate_bound_refinement=intermediate_bound_refinement)
 
         if method == 'backward':
             # This is for the final output bound.

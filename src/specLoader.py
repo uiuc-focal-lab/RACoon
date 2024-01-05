@@ -4,6 +4,7 @@ import torchvision.transforms as transforms
 from src.common import Dataset, RavenMode
 from auto_LiRPA.utils import get_spec_matrix
 from raven.src.network_conversion_helper import convert_model
+from raven.src.config import mnist_data_transform
 
 def get_transforms(dataset, transform=True):
     if dataset is Dataset.CIFAR10:
@@ -25,12 +26,12 @@ def get_std(dataset, transform=True):
     else:
         raise ValueError(f'Dataset {dataset} not recognised')
 
-def prepare_data(dataset, train=False, batch_size=100):
+def prepare_data(dataset, train=False, batch_size=100, transform=False):
     if dataset == Dataset.CIFAR10:
         # transform_test = transforms.Compose([
         #     transforms.ToTensor(), ])
 
-        transform_test = get_transforms(dataset=dataset, transform=True)
+        transform_test = get_transforms(dataset=dataset, transform=transform)
         testset = torchvision.datasets.CIFAR10(
             root='./data', train=train, download=True, transform=transform_test)
 
@@ -39,7 +40,7 @@ def prepare_data(dataset, train=False, batch_size=100):
 
         inputs, _ = next(iter(testloader))
     elif dataset == Dataset.MNIST:
-        transform_test = get_transforms(dataset=dataset)
+        transform_test = get_transforms(dataset=dataset, transform=transform)
         testloader = torch.utils.data.DataLoader(
             torchvision.datasets.MNIST('./data', train=train, download=True,
                                        transform=transform_test),
@@ -84,8 +85,10 @@ def get_input_bounds(images, eps, dataset, transform):
 
 
 def get_specification(dataset : Dataset, raven_mode : RavenMode,
-                     count, nets, eps, dataloading_seed):
-    testloader = prepare_data(dataset=dataset, train=False, batch_size=count*3)
+                     count, nets, eps, dataloading_seed, net_names):
+    assert len(net_names) > 0
+    transform = mnist_data_transform(dataset=dataset, net_name=net_names[0])
+    testloader = prepare_data(dataset=dataset, train=False, batch_size=count*3, transform=transform)
     images, labels = next(iter(testloader))
     images, labels = filter_misclassified(nets=nets, inputs=images, labels=labels)
     images, labels = images[:count], labels[:count]

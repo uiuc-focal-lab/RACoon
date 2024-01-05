@@ -489,7 +489,7 @@ def print_bound_updates(self, optimizable_activations):
     with torch.no_grad():
         node = optimizable_activations[-1]
         bnd_diff = (node.inputs[0].upper - node.inputs[0].lower).sum()
-        print(f'bound diff {node.name} {bnd_diff}')
+        print(f'bound diff {node.inputs[0].name} {bnd_diff}')
 
 
 def get_optimized_bounds(
@@ -500,7 +500,8 @@ def get_optimized_bounds(
         aux_reference_bounds=None, needed_A_dict=None, cutter=None,
         decision_thresh=None, epsilon_over_decision_thresh=1e-4,
         multiple_execution=False, execution_count=1, 
-        ptb=None, unperturbed_images=None, baseline_refined_bound={}):
+        ptb=None, unperturbed_images=None, baseline_refined_bound={},
+        intermediate_bound_refinement=False):
     """
     Optimize CROWN lower/upper bounds by alpha and/or beta.
     """
@@ -695,7 +696,8 @@ def get_optimized_bounds(
                 update_mask=preserve_mask,
                 multiple_execution=multiple_execution, execution_count=execution_count, 
                 ptb=ptb, unperturbed_images=unperturbed_images, 
-                baseline_refined_bound=baseline_refined_bound)
+                baseline_refined_bound=baseline_refined_bound,
+                intermediate_bound_refinement=intermediate_bound_refinement)
 
         ret_l, ret_u = ret[0], ret[1]
         # print(f'lower bound {ret_l.detach().min(dim=1)[0]}')
@@ -965,10 +967,11 @@ def get_optimized_bounds(
         if i != iteration - 1:
             # we do not need to update parameters in the last step since the
             # best result already obtained
+            retain_graph = True if i < (iteration - 1) and intermediate_bound_refinement else False
             if multiple_execution:
-                cross_execution_loss.backward(retain_graph=True)
+                cross_execution_loss.backward(retain_graph=retain_graph)
             else:
-                loss.backward(retain_graph=True)
+                loss.backward(retain_graph=retain_graph)
             # if multiple_execution:
             #     cross_execution_loss.backward()
             # else:
@@ -1004,6 +1007,7 @@ def get_optimized_bounds(
                 0, x[0].shape[0], device=x[0].device, dtype=torch.long)
             pruning_in_iteration = True
 
+    self.detach_bounds()
     if pruning_in_iteration:
         # overwrite pruned cells in best_ret by threshold + eps
         if return_A:

@@ -11,6 +11,8 @@ from src.gurobi_certifier import RavenLPtransformer
 import src.util as util
 import time
 
+# torch.backends.cudnn.enabled = False
+
 class AdaptiveRavenBackend:
     def __init__(self, prop, nets, args) -> None:
         self.prop = prop
@@ -38,12 +40,14 @@ class AdaptiveRavenBackend:
         self.final_layer_biases = []
         self.refinement_indices = None
         self.cross_executional_indices = None
+        self.cross_executional_indices_from_refinement = None
         self.layer_names = []
         self.optimize_layer_names = []
         # self.indices_for_2 = None
         # self.indices_for_3 = None
         # self.indices_for_4 = None
         self.indices_for = {}
+        self.indices_for_refined_bounds = {}
         self.lb_coef_dict = {}
         self.lb_bias_dict = {}
         # Store reference bounds if bounds are refined.
@@ -65,12 +69,13 @@ class AdaptiveRavenBackend:
 
 
     def initialize_models(self):
+        bound_opts = {'use_full_conv_alpha' : self.args.full_alpha}
         for net in self.nets:
             self.torch_models.append(get_pytorch_net(model=net, remove_last_layer=False, all_linear=False))
             self.torch_models[-1] = self.torch_models[-1].to(self.device)
             self.final_layer_weights.append(net[-1].weight.to(self.device))
             self.final_layer_biases.append(net[-1].bias.to(self.device))
-            self.bounded_models.append(BoundedModule(self.torch_models[-1], (self.prop.inputs)))
+            self.bounded_models.append(BoundedModule(self.torch_models[-1], (self.prop.inputs), bound_opts=bound_opts))
             # print(self.bounded_models[-1])
         self.populate_names()
         if self.args.refine_intermediate_bounds:
@@ -142,35 +147,38 @@ class AdaptiveRavenBackend:
     def store_refined_bounds(self):
         for model in self.bounded_models:
             for node_name, node in model._modules.items():
-                pass
-                # if node_name in self.optimize_layer_names:
-                #     self.refined_bounds[node_name] = [node.lower.clone().detach(), node.upper.clone().detach()]
-                #     print(f'lb shape {self.refined_bounds[node_name][0].shape}')
-                #     print(f'ub shape {self.refined_bounds[node_name][1].shape}')
-
-    def run_refinement(self, indices, device, multiple_execution=False, execution_count=None, iteration=None):
+                if node_name in self.optimize_layer_names:
+                    self.refined_bounds[node_name] = [node.lower.clone().detach(), node.upper.clone().detach()]
+                    
+    def run_refinement(self, indices, device, multiple_execution=False,
+                    execution_count=None, iteration=None, 
+                    indices_for_refined_bounds=None, refine_intermediate_bounds=False):
         self.shift_to_device(device=device, indices=indices)
         filtered_inputs = self.prop.inputs[indices]
         filtered_lbs, filtered_ubs = self.prop.lbs[indices], self.prop.ubs[indices]
         filtered_ptb = PerturbationLpNorm(norm = np.inf, x_L=filtered_lbs, x_U=filtered_ubs)
         filtered_dict = {}
+
         for key, element in self.refined_bounds.items():
+            if indices_for_refined_bounds is None:
+                continue
             if key not in filtered_dict.keys():
                 filtered_dict[key] = []
             for x in element:
-                filtered_dict[key].append(x[indices])
-            print(f'{key} : lb shape {filtered_dict[key][0].shape}')
-            print(f'{key} : ub shape {filtered_dict[key][1].shape}')
+                t = x[indices_for_refined_bounds]
+                filtered_dict[key].append(t)
+
 
         bounded_images = BoundedTensor(filtered_inputs, filtered_ptb)
         filtered_constraint_matrices = self.prop.constraint_matrices[indices]
         coef_dict = {self.final_names[0]: [self.input_names[0]]}
         for model in self.bounded_models:
             result = model.compute_bounds(x=(bounded_images,), method=self.optimized_method, C=filtered_constraint_matrices,
-                                           bound_upper=False, return_A=True, needed_A_dict=coef_dict, 
-                                        #    reference_bounds=filtered_dict,
+                                           bound_upper=False, return_A=True, needed_A_dict=coef_dict,
                                            multiple_execution=multiple_execution, execution_count=execution_count, ptb=filtered_ptb, 
-                                           unperturbed_images = filtered_inputs, iteration=iteration)
+                                           unperturbed_images = filtered_inputs, iteration=iteration, 
+                                           baseline_refined_bound=filtered_dict, 
+                                           intermediate_bound_refinement=refine_intermediate_bounds)
             lower_bnd, _, A_dict = result
             lA = A_dict[self.final_names[0]][self.input_names[0]]['lA']
             lbias = A_dict[self.final_names[0]][self.input_names[0]]['lbias']
@@ -183,8 +191,11 @@ class AdaptiveRavenBackend:
         if count not in self.indices_for.keys() or self.indices_for[count] is None:
             return None, None, None
         # print(f'Refinement indices {self.indices_for[count]}')
+        indices_for_refined_bounds = self.indices_for_refined_bounds[count] if count in self.indices_for_refined_bounds.keys() else None
         return self.run_refinement(indices=self.indices_for[count], device=self.device,
-                                    multiple_execution=True, execution_count=count, iteration=self.args.refinement_iterations)
+                                    multiple_execution=True, execution_count=count, iteration=self.args.refinement_iterations,
+                                    indices_for_refined_bounds=indices_for_refined_bounds,
+                                    refine_intermediate_bounds=self.args.refine_intermediate_bounds)
         
 
     def cross_executional_refinement(self, cross_executional_indices):
@@ -192,18 +203,24 @@ class AdaptiveRavenBackend:
         indices = cross_executional_indices.detach().cpu().numpy()
         if length > 1 and 2 <= self.args.maximum_cross_execution_count:
             self.indices_for[2] = self.populate_cross_indices(cross_executional_indices=indices, count=2)
+            self.indices_for_refined_bounds[2] = self.populate_cross_indices(cross_executional_indices=self.cross_executional_indices_from_refinement,
+                                                                              count=2)
             lA, lbias, lower_bnd = self.run_cross_executional_refinement(count=2)
             # if lower_bnd is not None:
             #     print(f'count 2 lower bound {lower_bnd.detach().cpu().min(axis=1)[0]}')
         
         if length > 2 and 3 <= self.args.maximum_cross_execution_count:
             self.indices_for[3] = self.populate_cross_indices(cross_executional_indices=indices, count=3)
+            self.indices_for_refined_bounds[3] = self.populate_cross_indices(cross_executional_indices=self.cross_executional_indices_from_refinement,
+                                                                              count=3)
             lA, lbias, lower_bnd = self.run_cross_executional_refinement(count=3)
             # if lower_bnd is not None:
             #     print(f'count 3 lower bound {lower_bnd.detach().cpu().min(axis=1)[0]}')
         
         if length > 3 and 4 <= self.args.maximum_cross_execution_count:
             self.indices_for[4] = self.populate_cross_indices(cross_executional_indices=indices, count=4)
+            self.indices_for_refined_bounds[4] = self.populate_cross_indices(cross_executional_indices=self.cross_executional_indices_from_refinement,
+                                                                              count=4)
             lA, lbias, lower_bnd = self.run_cross_executional_refinement(count=4)
             # if lower_bnd is not None:
             #     print(f'count 4 lower bound {lower_bnd.detach().cpu().min(axis=1)[0]}')
@@ -230,12 +247,17 @@ class AdaptiveRavenBackend:
             self.shift_to_device(device=override_device)
         else:
             self.shift_to_device(device=self.device)
-        lA, lbias, lower_bnd = self.run_refinement(indices=self.refinement_indices, device=self.device, iteration=self.args.baseline_iteration)
+        
+        bound_refine_enabled = self.args.refine_intermediate_bounds and self.args.bounds_for_individual_refinement
+        lA, lbias, lower_bnd = self.run_refinement(indices=self.refinement_indices, device=self.device, 
+                                                   iteration=self.args.baseline_iteration,
+                                                   refine_intermediate_bounds=bound_refine_enabled)
         print(f'individual refinement lower bound {lower_bnd.detach().cpu().min(axis=1)[0]}')
+        # exit()
         self.store_refined_bounds()
 
-        self.cross_executional_indices = self.select_indices(lower_bound=lower_bnd, threshold=self.args.cross_executional_threshold)
-        self.cross_executional_indices = self.refinement_indices[self.cross_executional_indices]
+        self.cross_executional_indices_from_refinement = self.select_indices(lower_bound=lower_bnd, threshold=self.args.cross_executional_threshold)
+        self.cross_executional_indices = self.refinement_indices[self.cross_executional_indices_from_refinement]
         self.cross_executional_refinement(cross_executional_indices=self.cross_executional_indices)
 
         return lA, lbias, lower_bnd

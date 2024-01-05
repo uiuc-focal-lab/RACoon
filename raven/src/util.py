@@ -2,8 +2,6 @@ import csv
 import os
 import resource
 
-# import onnx2pytorch
-
 import raven.src.common as common
 from time import gmtime, strftime
 import onnx
@@ -27,6 +25,7 @@ from raven.src.domains.deepz_uap import ZonoUAPTransformer
 from raven.src.networks import FullyConnected, Conv
 from raven.src.common.network import LayerType, Layer
 
+
 rt.set_default_logger_severity(3)
 
 def get_custom_pth_nets():
@@ -39,6 +38,10 @@ def get_pth_model_formats():
     _pth_model_format["mnist_cnn_3layer_fixed_kernel_3_width_1_best"] = {"in_ch": 1, "in_dim": 28, "kernel_size": 3, "width": 1}
     _pth_model_format["cifar_cnn_2layer_width_2_best"] = {"in_ch": 3, "in_dim": 32, "width": 2, "linear_size": 256}
     _pth_model_format["mnist_cnn_2layer_width_1_best"] = {"in_ch": 1, "in_dim": 28, "width": 1, "linear_size": 128}
+    _pth_model_format["crown_cifar_cnn_3layer_fixed_kernel_3_width_1_best"] = {"in_ch": 3, "in_dim": 32, "kernel_size": 3, "width": 8}
+    _pth_model_format["crown_mnist_cnn_3layer_fixed_kernel_3_width_1_best"] = {"in_ch": 1, "in_dim": 28, "kernel_size": 3, "width": 1}
+    _pth_model_format["crown_cifar_cnn_2layer_width_2_best"] = {"in_ch": 3, "in_dim": 32, "width": 2, "linear_size": 256}
+    _pth_model_format["crown_mnist_cnn_2layer_width_1_best"] = {"in_ch": 1, "in_dim": 28, "width": 1, "linear_size": 128}
     return _pth_model_format
 
 def get_pth_model_parameter(net_name):
@@ -73,6 +76,10 @@ def get_linear_layers(net):
         linear_layers.append(layer)
     return linear_layers
 
+def load_binary_net(net_name):
+    model = load_model(net_name=net_name)
+    return model
+
 
 def get_torch_net(net_file, dataset, device='cpu'):
     net_name = net_file.split('/')[-1].split('.')[-2]
@@ -85,6 +92,15 @@ def get_torch_net(net_file, dataset, device='cpu'):
         return model
     
     if 'pt' in net_file:
+        if 'binary' in net_file:
+            model = load_binary_net(net_name=net_file)
+            if 'relu' in net_file:
+                model = [model.fc1, model.relu, model.fc2]
+            if 'sigmoid' in net_file:
+                model = [model.fc1, model.sigmoid, model.fc2]
+            if 'tanh' in net_file:
+                model = [model.fc1, model.tanh, model.fc2]
+            return model
         model = load_pt_model_modified(net_file)
         return model
 
@@ -228,7 +244,7 @@ def prepare_data(dataset, train=False, batch_size=100):
             transforms.ToTensor(), ])
 
         testset = torchvision.datasets.CIFAR10(
-            root='./data', train=train, download=True, transform=transform_test)
+            root='/home/debangshu/uap-verification/data', train=train, download=True, transform=transform_test)
 
         testloader = torch.utils.data.DataLoader(
             testset, batch_size=batch_size, shuffle=False, num_workers=2)
@@ -236,7 +252,7 @@ def prepare_data(dataset, train=False, batch_size=100):
         inputs, _ = next(iter(testloader))
     elif dataset == Dataset.MNIST:
         testloader = torch.utils.data.DataLoader(
-            torchvision.datasets.MNIST('./data', train=train, download=True,
+            torchvision.datasets.MNIST('/home/debangshu/uap-verification/data', train=train, download=True,
                                        transform=torchvision.transforms.Compose([
                                            torchvision.transforms.ToTensor(),
                                            torchvision.transforms.Normalize(
@@ -318,7 +334,7 @@ def is_lirpa_domain(domain):
 
 def get_domain_builder(domain):
     if domain == Domain.DEEPPOLY:
-        return DeeppolyTransformer
+        return DeepPolyTransformerOptimized
     if domain == Domain.DEEPZ:
         return ZonoTransformer
     if domain == Domain.BOX:
@@ -351,14 +367,11 @@ def prune_last_layer(weight, indices):
 
 def get_debug_network():
     network = []
-    weight1 = torch.tensor([[2, -1], [3, -1]], dtype=torch.float)
+    weight1 = torch.tensor([[1, -1], [-2, 1]], dtype=torch.float)
     weight2 = torch.tensor([[1, -1], [-1, 1]], dtype=torch.float)
-    weight3 = torch.tensor([[1, 0], [0, 1]], dtype=torch.float)
     network.append(Layer(weight=weight1, bias=torch.zeros(2), type=LayerType.Linear))
     network.append(Layer(type=LayerType.ReLU))
     network.append(Layer(weight=weight2, bias=torch.zeros(2), type=LayerType.Linear))
-    network.append(Layer(type=LayerType.ReLU))
-    network.append(Layer(weight=weight3, bias=torch.zeros(2), type=LayerType.Linear))
     return network
 
 def get_net(net_name, dataset, debug_mode=False):

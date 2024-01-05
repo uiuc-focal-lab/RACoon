@@ -4,6 +4,7 @@ from src.specLoader import get_specification, get_std
 from src.netLoader import get_net
 from src.adaptiveRavenBackend import AdaptiveRavenBackend
 from src.adaptiveRavenResult import AdaptiveRavenResultList
+from raven.src.config import mnist_data_transform
 
 class RavenArgs:
     def __init__(self, raven_mode : RavenMode, dataset : Dataset, net_names,
@@ -11,7 +12,8 @@ class RavenArgs:
                 threshold_execution=5, cross_executional_threshold=4, 
                 maximum_cross_execution_count=3, baseline_iteration=10,
                 refinement_iterations=30, unroll_layers = False, unroll_layer_count=3,
-                optimize_layers_count = None,
+                optimize_layers_count = None, full_alpha=False,
+                bounds_for_individual_refinement=False,
                 refine_intermediate_bounds = False, dataloading_seed = 0, 
                 result_dir=None, write_file=True) -> None:
         self.raven_mode = raven_mode
@@ -28,6 +30,8 @@ class RavenArgs:
         self.maximum_cross_execution_count = maximum_cross_execution_count
         self.baseline_iteration = baseline_iteration
         self.refinement_iterations = refinement_iterations
+        self.bounds_for_individual_refinement=bounds_for_individual_refinement
+        self.full_alpha = full_alpha
         self.unroll_layers = unroll_layers
         self.unroll_layer_count = unroll_layer_count
         self.refine_intermediate_bounds = refine_intermediate_bounds
@@ -51,20 +55,25 @@ def adptiveRaven(raven_args : RavenArgs):
     images, labels, constraint_matrices, lbs, ubs = get_specification(dataset=raven_args.dataset,
                                                             raven_mode=raven_args.raven_mode, 
                                                             count=total_input_count, nets=nets, eps=raven_args.eps,
-                                                            dataloading_seed=raven_args.dataloading_seed)
+                                                            dataloading_seed=raven_args.dataloading_seed,
+                                                            net_names=raven_args.net_names)
+    assert len(raven_args.net_names) > 0
     assert images.shape[0] == raven_args.count_per_prop * raven_args.prop_count
     assert labels.shape[0] == raven_args.count_per_prop * raven_args.prop_count
     assert constraint_matrices.shape[0] == raven_args.count_per_prop * raven_args.prop_count
 
     result_list = AdaptiveRavenResultList(args=raven_args)
+    data_transform = mnist_data_transform(dataset=raven_args.dataset, net_name=raven_args.net_names[0])
 
+    print(f'net name {raven_args.net_names[0]} data transform {data_transform}')
     for i in range(raven_args.prop_count):
         start = i * raven_args.count_per_prop
         end = start + raven_args.count_per_prop
         prop_images, prop_labels, prop_constraint_matrices = images[start:end], labels[start:end], constraint_matrices[start:end]
         prop_lbs, prop_ubs = lbs[start:end], ubs[start:end]
-        prop = Property(inputs=prop_images, labels=prop_labels, eps=raven_args.eps / get_std(dataset=raven_args.dataset),
-                         constraint_matrices=prop_constraint_matrices, lbs=prop_lbs, ubs=prop_ubs)
+        prop = Property(inputs=prop_images, labels=prop_labels, 
+                        eps=raven_args.eps / get_std(dataset=raven_args.dataset, transform=data_transform),
+                        constraint_matrices=prop_constraint_matrices, lbs=prop_lbs, ubs=prop_ubs)
         verifier = AdaptiveRavenBackend(prop=prop, nets=nets, args=raven_args)
         result = verifier.verify()
         result_list.add_res(res=result)
