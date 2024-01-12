@@ -60,7 +60,7 @@ def filter_misclassified(nets, inputs, labels):
             outputs = converted_model(inputs)
             output_labels = torch.max(outputs, axis=1)[1]
             # print(f'matching tensor {output_labels == labels}')
-            print(f"accurecy {(output_labels == labels).sum() / labels.shape[0] * 100}")
+            print(f"accuracy {(output_labels == labels).sum() / labels.shape[0] * 100}")
             inputs = inputs[output_labels == labels]
             labels = labels[output_labels == labels]
             return inputs, labels

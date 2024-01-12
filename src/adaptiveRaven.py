@@ -14,6 +14,8 @@ class RavenArgs:
                 refinement_iterations=30, unroll_layers = False, unroll_layer_count=3,
                 optimize_layers_count = None, full_alpha=False,
                 bounds_for_individual_refinement=False,
+                always_correct_cross_execution=False,
+                parallelize_executions = False,
                 refine_intermediate_bounds = False, dataloading_seed = 0, 
                 result_dir=None, write_file=True) -> None:
         self.raven_mode = raven_mode
@@ -34,6 +36,8 @@ class RavenArgs:
         self.full_alpha = full_alpha
         self.unroll_layers = unroll_layers
         self.unroll_layer_count = unroll_layer_count
+        self.always_correct_cross_execution = always_correct_cross_execution
+        self.parallelize_executions = parallelize_executions
         self.refine_intermediate_bounds = refine_intermediate_bounds
         self.optimize_layers_count = optimize_layers_count
         self.dataloading_seed = dataloading_seed

@@ -21,6 +21,8 @@ class AdaptiveRavenBackend:
         # Converted torch models.
         self.torch_models = []
         self.bounded_models = []
+        self.bounded_models_3 = []
+        self.bounded_models_4 = []
         self.ptb = None
         self.input_names = []
         self.final_names = []
@@ -32,6 +34,7 @@ class AdaptiveRavenBackend:
         self.individual_verified = None
         self.baseline_res = None
         self.individual_refinement_res = None
+        self.inidividual_refinement_MILP_res = None
         self.cross_executional_refinement_res = None
         self.final_res = None
         self.baseline_lowerbound = None
@@ -152,7 +155,8 @@ class AdaptiveRavenBackend:
                     
     def run_refinement(self, indices, device, multiple_execution=False,
                     execution_count=None, iteration=None, 
-                    indices_for_refined_bounds=None, refine_intermediate_bounds=False):
+                    indices_for_refined_bounds=None, refine_intermediate_bounds=False,
+                    populate_results=True):
         self.shift_to_device(device=device, indices=indices)
         filtered_inputs = self.prop.inputs[indices]
         filtered_lbs, filtered_ubs = self.prop.lbs[indices], self.prop.ubs[indices]
@@ -168,7 +172,6 @@ class AdaptiveRavenBackend:
                 t = x[indices_for_refined_bounds]
                 filtered_dict[key].append(t)
 
-
         bounded_images = BoundedTensor(filtered_inputs, filtered_ptb)
         filtered_constraint_matrices = self.prop.constraint_matrices[indices]
         coef_dict = {self.final_names[0]: [self.input_names[0]]}
@@ -178,13 +181,15 @@ class AdaptiveRavenBackend:
                                            multiple_execution=multiple_execution, execution_count=execution_count, ptb=filtered_ptb, 
                                            unperturbed_images = filtered_inputs, iteration=iteration, 
                                            baseline_refined_bound=filtered_dict, 
-                                           intermediate_bound_refinement=refine_intermediate_bounds)
+                                           intermediate_bound_refinement=refine_intermediate_bounds,
+                                           always_correct_cross_execution=self.args.always_correct_cross_execution)
             lower_bnd, _, A_dict = result
             lA = A_dict[self.final_names[0]][self.input_names[0]]['lA']
             lbias = A_dict[self.final_names[0]][self.input_names[0]]['lbias']
             lA = torch.reshape(lA,(filtered_inputs.shape[0], self.number_of_class-1,-1))
         
-        self.populate_coef_and_bias(indices=indices, lb_coef=lA, lb_bias=lbias)
+        if populate_results:
+            self.populate_coef_and_bias(indices=indices, lb_coef=lA, lb_bias=lbias)
         return lA, lbias, lower_bnd      
 
     def run_cross_executional_refinement(self, count):
@@ -239,7 +244,19 @@ class AdaptiveRavenBackend:
                 self.lb_bias_dict[ind] = []
             self.lb_bias_dict[ind].append(lb_bias[i])
             self.lb_coef_dict[ind].append(lb_coef[i])
-
+    
+    # remove last added coef and bias for the particular index.
+    def clear_coef_and_bias(self, indices):
+        for i, ind in enumerate(indices):
+            if type(ind) is torch.Tensor:
+                ind = ind.item()
+            if ind not in self.lb_bias_dict.keys():
+                continue
+            if len(self.lb_bias_dict[ind]) <= 0 or len(self.lb_coef_dict[ind]) <= 0:
+                continue
+            self.lb_bias_dict[ind].pop()
+            self.lb_coef_dict[ind].pop()
+        
 
     def get_coef_bias_with_refinement(self, override_device=None):
         self.refinement_indices = self.select_indices(lower_bound=self.baseline_lowerbound, threshold=self.args.threshold_execution)
@@ -291,7 +308,42 @@ class AdaptiveRavenBackend:
         self.individual_res = Result(final_result=individual_ceritified_accuracy, final_time=individual_time)
         self.baseline_res = Result(final_result=baseline_accuracy, final_time=baseline_time)
         # Populate the coeficients and biases.
+
+    def get_baseline_refinement_res(self, override_device=None):
+        start_time = time.time()
+        self.refinement_indices = self.select_indices(lower_bound=self.baseline_lowerbound, threshold=self.args.threshold_execution)
+        if override_device is not None:
+            self.shift_to_device(device=override_device)
+        else:
+            self.shift_to_device(device=self.device)
         
+        bound_refine_enabled = self.args.refine_intermediate_bounds and self.args.bounds_for_individual_refinement
+        lA, lbias, lower_bnd = self.run_refinement(indices=self.refinement_indices, device=self.device, 
+                                                   iteration=self.args.baseline_iteration,
+                                                   refine_intermediate_bounds=False, 
+                                                   populate_results=True)
+        individual_refinement_count = self.get_verified_count(lower_bnd=lower_bnd) + self.individual_verified
+        individual_refinement_accuracy = individual_refinement_count / self.args.count_per_prop * 100
+        individual_refinement_time = time.time() - start_time
+        print(f'Individual lower bound {lower_bnd.min(axis=1)[0].sort(descending=True)[0]}')
+        print(f'Individual refinement certified accuracy {individual_refinement_accuracy}')
+        self.individual_refinement_res = Result(final_result=individual_refinement_accuracy,
+                                                final_time=individual_refinement_time)
+        milp_verifier = RavenLPtransformer(eps=self.prop.eps, inputs=self.prop.inputs, batch_size=self.args.count_per_prop,
+                                         roll_indices=None, lb_coef=lA, lb_bias=lbias,
+                                         lb_coef_dict=self.lb_coef_dict, lb_bias_dict=self.lb_bias_dict, non_verified_indices=None,
+                                         lb_penultimate_coef=None, lb_penultimate_bias=None, ub_penultimate_coef=None,
+                                         ub_penultimate_bias=None, lb_penult=None, ub_penult=None,
+                                         constraint_matrices=self.prop.constraint_matrices,
+                                         input_lbs=self.prop.lbs, input_ubs=self.prop.ubs, disable_unrolling=True)
+        individual_refinement_MILP = milp_verifier.formulate_constriants_from_dict(final_weight=self.final_layer_weights[0],
+                                                        final_bias=self.final_layer_biases[0]).solv_MILP() / self.args.count_per_prop * 100
+        print(f'Individual MILP certified accuracy {individual_refinement_MILP}')
+        self.clear_coef_and_bias(indices=self.refinement_indices)
+        individual_refinement_MILP_time = time.time() - start_time
+        self.inidividual_refinement_MILP_res = Result(final_result=individual_refinement_MILP,
+                                                final_time=individual_refinement_MILP_time)
+
     def get_post_refinement_unverified_indices(self, refined_lower_bound):
         all_cross_execution_indices = self.select_indices(lower_bound=refined_lower_bound.detach().cpu(), threshold=None)
         all_cross_execution_indices = all_cross_execution_indices.detach().cpu()
@@ -314,15 +366,15 @@ class AdaptiveRavenBackend:
             print(f'{key} : {len(self.lb_coef_dict[key])}')
 
     def get_refined_res(self):
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
         start_time = time.time()
         lA, lbias, lower_bnd = self.get_coef_bias_with_refinement()
         lA, lbias, lower_bnd = lA.detach(), lbias.detach(), lower_bnd.detach()
         individual_refinement_count = self.get_verified_count(lower_bnd=lower_bnd) + self.individual_verified
-        individual_refinement_accuracy = individual_refinement_count / self.args.count_per_prop * 100
-        individual_refinement_time = time.time() - start_time
-        print(f'lower bound {lower_bnd.min(axis=1)[0].sort(descending=True)[0]}')
-        print(f'Individual refinement certified accuracy {individual_refinement_accuracy}')
+        # individual_refinement_accuracy = individual_refinement_count / self.args.count_per_prop * 100
+        # individual_refinement_time = time.time() - start_time
+        # print(f'lower bound {lower_bnd.min(axis=1)[0].sort(descending=True)[0]}')
+        # print(f'Individual refinement certified accuracy {individual_refinement_accuracy}')
         lp_indices = self.get_post_refinement_unverified_indices(refined_lower_bound=lower_bnd)
         # print(f'indices for refinement {lp_indices}')
         # self.read_dict()
@@ -340,7 +392,6 @@ class AdaptiveRavenBackend:
         final_accuracy = final_count / self.args.count_per_prop * 100.0
         print(f'Final certified accuracy {final_accuracy}')
         final_time = time.time() - start_time
-        self.individual_refinement_res = Result(final_result=individual_refinement_accuracy, final_time=individual_refinement_time)
         self.final_res = Result(final_result=final_accuracy, final_time=final_time)
 
     def verify(self) -> AdaptiveRavenResult:
@@ -353,9 +404,13 @@ class AdaptiveRavenBackend:
         # Get the final results.
         if self.individual_verified == self.args.count_per_prop:
             self.individual_refinement_res = self.individual_res
+            self.inidividual_refinement_MILP_res = self.baseline_res
+            self.cross_executional_refinement_res = self.baseline_res
             self.final_res = self.baseline_res
         else:
+            self.get_baseline_refinement_res()
             self.get_refined_res()
         return AdaptiveRavenResult(individual_res=self.individual_res, baseline_res=self.baseline_res,
                                    individual_refinement_res=self.individual_refinement_res,
+                                   individual_refinement_milp_res=self.inidividual_refinement_MILP_res,
                                    cross_executional_refinement_res=self.final_res, final_res=self.final_res)

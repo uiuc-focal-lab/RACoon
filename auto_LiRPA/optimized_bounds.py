@@ -418,12 +418,13 @@ def _compute_lb(lb_coef, lb_bias, ptb, unperturbed_images):
     # print(f'new lower_bound {lower_bound.min(dim=1)[0]}')
     return lower_bound
 
-def extract_mininum_coef(self, lb_coef, lb_bias, ptb, unperturbed_images):
+def extract_mininum_coef(self, lb_coef, lb_bias, ptb, unperturbed_images, indices=None):
     center, diff = ptb.get_center_diff(unperturbed_images, lb_coef)
     lb_temp = lb_coef.abs().matmul(diff)
     center, lb_temp = center.squeeze(), lb_temp.squeeze()
     lower_bound = center + -1 * lb_temp + lb_bias
-    indices = lower_bound.min(dim=1)[1]
+    if indices is None:
+        indices = lower_bound.min(dim=1)[1]
     # print(f'lower_bound {lower_bound.min(dim=1)[0]}')
     return lb_coef[range(len(indices)), indices, :], lb_bias[range(len(indices)), indices], center[range(len(indices)), indices], diff
 
@@ -432,10 +433,12 @@ def cross_execution_loss_helper(self, lb_coef_updated, lb_bias_updated,
     lamb = torch.nn.functional.relu(self.optimizable_lambda) + 1e-17
     assert lamb.shape[0] % execution_count == 0
     # Normalize the lambda values
-    lamb = lamb.view(execution_count, -1)
+    lamb = lamb.reshape(execution_count, -1)
     lamb = lamb / (lamb.sum(dim=0) + 1e-17)
-    lamb = lamb.view(-1)
-    # print(f'lambda {lamb}')
+    lamb = lamb.reshape(-1)
+    # lamb.retain_grad()
+    # print(f'lambda {self.optimizable_lambda}')
+    # print(f'lambda gradient {self.optimizable_lambda.grad}')    
     lb_bias_updated = lb_bias_updated * lamb
     center = center * lamb
     lb_coef_updated = lamb * lb_coef_updated.T
@@ -465,22 +468,108 @@ def get_cross_execution_loss(self, lb_coef, lb_bias, execution_count, ptb, unper
     #     raise ValueError(f'Currently only support pair of executions')
     lb_coef_temp = lb_coef.view(lb_coef.shape[0], lb_coef.shape[1], -1)
     lb_coef_updated, lb_bias_updated, center, diff = self.extract_mininum_coef(lb_coef_temp, lb_bias, ptb, unperturbed_images)
-    half_val = lb_coef.shape[0] // execution_count
 
     loss = self.cross_execution_loss_helper(lb_coef_updated, lb_bias_updated,
                                 execution_count, center, diff)
-    # left_half, left_bias = lb_coef_updated[:half_val], lb_bias_updated[:half_val]
-    # right_half, right_bias = lb_coef_updated[half_val:], lb_bias_updated[half_val:]
-    # center_left, center_right = center[:half_val], center[half_val:]
-    # diff = diff[:half_val]
-    # lamb = torch.sigmoid(self.optimizable_lambda)
-    # lamb = lamb / (lamb.sum() + 1e-17)
-    # print(f'lambda {lamb}')
-    # # loss = (lamb * (left_bias + center_left) + (1 - lamb) * (right_bias + center_right)).sum() - torch.abs(lamb * left_half + (1 - lamb) * right_half).matmul(diff).sum() 
-    # loss = (lamb[0] * (left_bias + center_left) + (lamb[1]) * (right_bias + center_right)).sum() 
-    # loss -= torch.abs(lamb[0] * left_half + lamb[1] * right_half).matmul(diff).sum()
-
     return loss
+
+
+def get_unverified_indices(approx_cross_ex_loss_tensor, lower_bound, different_executions):
+    with torch.no_grad():
+        unverified_indices = []
+        for i in range(lower_bound.shape[0]):
+            # print(f'lower bound {lower_bound[i]}')
+            # print(f'cross ex {approx_cross_ex_loss_tensor[i % different_executions]}')
+            temp_indices = torch.nonzero(lower_bound[i] <= approx_cross_ex_loss_tensor[i % different_executions]).reshape(-1)
+            if temp_indices.shape[0] <= 0:
+                print(f'{torch.argmin(lower_bound[i]).unsqueeze(dim=0)}')
+                temp_indices = torch.argmin(lower_bound[i]).unsqueeze(dim=0)
+            unverified_indices.append(temp_indices)
+            # print(f'Not verified indices {unverified_indices[-1]}')
+        return unverified_indices
+
+def select_inidces(list_of_indices, execution_count):
+    with torch.no_grad():
+        assert execution_count == len(list_of_indices)
+        inidices_tuples = []
+        if execution_count == 2:
+            for x in list_of_indices[0]:
+                for y in list_of_indices[1]:
+                    inidices_tuples.append((x, y))
+            return inidices_tuples
+        elif execution_count == 3:
+            for x in list_of_indices[0]:
+                for y in list_of_indices[1]:
+                    for z in list_of_indices[2]:
+                        inidices_tuples.append((x, y, z))
+            return inidices_tuples
+        elif execution_count == 4:
+            for x in list_of_indices[0]:
+                for y in list_of_indices[1]:
+                    for z in list_of_indices[2]:
+                        for w in list_of_indices[3]:
+                            inidices_tuples.append((x, y, z, w))
+            return inidices_tuples
+        else:
+            raise ValueError(f'Execution count {execution_count} > 5 not supported')
+
+
+def get_all_indices(unverified_indices, execution_count):
+    with torch.no_grad(): 
+        assert len(unverified_indices) % execution_count == 0
+        all_inidices = []
+        max_length = 0
+        different_executions = len(unverified_indices) // execution_count
+        for i in range(different_executions):
+            curr_indices = []
+            j = i
+            while j < len(unverified_indices):
+                curr_indices.append(unverified_indices[j])
+                j += different_executions
+            all_inidices.append(select_inidces(list_of_indices=curr_indices, 
+                                            execution_count=execution_count))
+            max_length = max(max_length, len(all_inidices[-1]))
+        
+        all_ex_indices = []
+        for i in range(max_length):
+            indices = []
+            for j in range(different_executions):
+                try:
+                    indices.append(all_inidices[j][min(len(all_inidices[j]) - 1, i)])
+                except:
+                    print(f'j {j} len {len(all_inidices[j]) - 1} i {i} final index {min(len(all_inidices[j]) - 1, i)}')
+            final_indices = []
+            for j in range(execution_count):
+                for k in range(different_executions):
+                    if type(indices[k][j]) is torch.Tensor:
+                        final_indices.append(indices[k][j].item())
+                    else:
+                        final_indices.append(indices[k][j])
+            all_ex_indices.append(final_indices)
+
+        return all_ex_indices
+   
+def get_final_cross_executional_loss(self, lb_coef, lb_bias, execution_count, lower_bound,
+                                     ptb, unperturbed_images, approx_cross_ex_loss_tensor):
+    # with torch.no_grad():
+    assert lb_coef.shape[0] % execution_count == 0
+    assert lb_bias.shape[0] % execution_count == 0
+    assert lower_bound.shape[0] == lb_coef.shape[0]
+    different_executions = lb_coef.shape[0] // execution_count
+    unverified_indices = get_unverified_indices(approx_cross_ex_loss_tensor=approx_cross_ex_loss_tensor, 
+                                                lower_bound=lower_bound, different_executions=different_executions)
+    all_ex_indices = get_all_indices(unverified_indices, execution_count)
+    lb_coef_temp = lb_coef.view(lb_coef.shape[0], lb_coef.shape[1], -1)
+    final_loss = None
+    for indices in all_ex_indices:
+        indices = torch.tensor(indices, device=lb_coef_temp.device)
+        lb_coef_updated, lb_bias_updated, center, diff = self.extract_mininum_coef(lb_coef_temp, lb_bias, ptb, unperturbed_images, indices)
+
+        loss = self.cross_execution_loss_helper(lb_coef_updated, lb_bias_updated,
+                                    execution_count, center, diff)
+        final_loss = loss if final_loss is None else torch.min(loss, final_loss)
+        
+    return final_loss
 
 
 def print_bound_updates(self, optimizable_activations):
@@ -491,7 +580,6 @@ def print_bound_updates(self, optimizable_activations):
         bnd_diff = (node.inputs[0].upper - node.inputs[0].lower).sum()
         print(f'bound diff {node.inputs[0].name} {bnd_diff}')
 
-
 def get_optimized_bounds(
         self, x=None, aux=None, C=None, IBP=False, forward=False,
         method='backward', bound_lower=True, bound_upper=False,
@@ -501,7 +589,9 @@ def get_optimized_bounds(
         decision_thresh=None, epsilon_over_decision_thresh=1e-4,
         multiple_execution=False, execution_count=1, 
         ptb=None, unperturbed_images=None, baseline_refined_bound={},
-        intermediate_bound_refinement=False):
+        intermediate_bound_refinement=False, 
+        always_correct_cross_execution=False,
+        cross_refinement_results={}):
     """
     Optimize CROWN lower/upper bounds by alpha and/or beta.
     """
@@ -565,7 +655,7 @@ def get_optimized_bounds(
             optimizable_activations, parameters, alphas, lr_alpha)
     
     if multiple_execution:
-        self.get_cross_execution_params(x, execution_count, parameters, 4.0*lr_alpha)
+        self.get_cross_execution_params(x, execution_count, parameters, lr_alpha)
 
     if beta:
         ret_set_beta = _set_beta(
@@ -681,7 +771,7 @@ def get_optimized_bounds(
             ret = self.compute_bounds(
                 x, aux, C, method=method, IBP=IBP, forward=forward,
                 bound_lower=bound_lower, bound_upper=bound_upper,
-                reuse_ibp=reuse_ibp, return_A=return_A,
+                reuse_ibp=reuse_ibp, return_A=return_A, reuse_alpha=True,
                 final_node_name=final_node_name, average_A=average_A,
                 intermediate_layer_bounds=arg_ilb,
                 # This is the currently tightest interval, which will be used to
@@ -697,25 +787,29 @@ def get_optimized_bounds(
                 multiple_execution=multiple_execution, execution_count=execution_count, 
                 ptb=ptb, unperturbed_images=unperturbed_images, 
                 baseline_refined_bound=baseline_refined_bound,
-                intermediate_bound_refinement=intermediate_bound_refinement)
+                intermediate_bound_refinement=intermediate_bound_refinement,
+                always_correct_cross_execution=always_correct_cross_execution, 
+                cross_refinement_results=cross_refinement_results)
 
         ret_l, ret_u = ret[0], ret[1]
-        # print(f'lower bound {ret_l.detach().min(dim=1)[0]}')
+
         # print(f'final node name {self.final_name} input node name {self.input_node_name}')
         if len(ret) > 2 and multiple_execution: 
             lb_coef = ret[2]["final_coef"]['Final_Backprop_ANS']['lA']
-            lb_bias = ret[2]["final_coef"]['Final_Backprop_ANS']['lbias']            
-            # print(f'lb coef shape {lb_coef.shape}')
-            # print(f'lb bias shape {lb_bias.shape}')
-            # ret_l = _compute_lb(lb_coef, lb_bias, ptb, unperturbed_images)
-            cross_execution_loss = self.get_cross_execution_loss(lb_coef, lb_bias, execution_count, ptb, unperturbed_images)
+            lb_bias = ret[2]["final_coef"]['Final_Backprop_ANS']['lbias']
+            approx_cross_execution_loss = self.get_cross_execution_loss(lb_coef, lb_bias, execution_count, ptb, unperturbed_images)
+            final_cross_executional_loss = None
+            if always_correct_cross_execution:
+                final_cross_executional_loss = self.get_final_cross_executional_loss(lb_coef, lb_bias, execution_count, ret_l,
+                                        ptb, unperturbed_images, approx_cross_execution_loss)
+                cross_execution_loss = -final_cross_executional_loss.sum()
+                print(f'cross executional loss {final_cross_executional_loss}')
+            else:
+                cross_execution_loss = -approx_cross_execution_loss.sum()
             if i == iteration - 1:
-                print(f'cross_execution_loss {cross_execution_loss}')
-            cross_execution_loss = - cross_execution_loss.sum()
-
+                print(f'approx cross execution loss {approx_cross_execution_loss}')
         else:
             cross_execution_loss = None
-            # print(f'lower bound {ret_l.min(dim=1)}')
         
         if (self.cut_used and i % cutter.log_interval == 0
                 and len(self.cut_beta_params) > 0):
@@ -764,7 +858,6 @@ def get_optimized_bounds(
         full_l = l
         full_ret = ret
 
-        # self.print_bound_updates(optimizable_activations)
         # positive domains may already be filtered out, so we use all domains -
         # negative domains to compute
         if decision_thresh is not None:
@@ -938,11 +1031,15 @@ def get_optimized_bounds(
             #     f'loss: {loss.item()}, lr: {opt.param_groups[0]["lr"]}')
 
         if stop_criterion_final:
+            if multiple_execution:
+                print(f'cross_execution_loss {approx_cross_execution_loss}')
             print(f'\nall verified at {i}th iter')
             break
 
         if patience > early_stop_patience:
-            logger.debug(
+            if multiple_execution:
+                print(f'cross_execution_loss {approx_cross_execution_loss}')
+            print(
                 f'Early stop at {i}th iter due to {early_stop_patience}'
                 ' iterations no improvement!')
             break
@@ -1008,6 +1105,15 @@ def get_optimized_bounds(
             pruning_in_iteration = True
 
     self.detach_bounds()
+    # correct the final cross executional loss.
+    if len(ret) > 2 and multiple_execution: 
+        lb_coef = ret[2]["final_coef"]['Final_Backprop_ANS']['lA']
+        lb_bias = ret[2]["final_coef"]['Final_Backprop_ANS']['lbias']
+        final_cross_executional_loss = self.get_final_cross_executional_loss(lb_coef=lb_coef, lb_bias=lb_bias, execution_count=execution_count,
+                                            lower_bound=ret_l.detach(), approx_cross_ex_loss_tensor=approx_cross_execution_loss,
+                                            ptb=ptb, unperturbed_images=unperturbed_images)
+        print(f'Final cross executional loss {final_cross_executional_loss}')  
+    
     if pruning_in_iteration:
         # overwrite pruned cells in best_ret by threshold + eps
         if return_A:
@@ -1102,7 +1208,7 @@ def get_optimized_bounds(
                 best_ret_l.sum().item(), 'with beta sum per layer:',
                 [p.sum().item() for p in betas])
         print('alpha/beta optimization time:', time.time() - start)
-
+    
     for node in optimizable_activations:
         node.opt_end()
 

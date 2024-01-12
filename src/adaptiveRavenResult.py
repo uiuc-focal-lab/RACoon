@@ -9,11 +9,14 @@ class Result:
 
 class AdaptiveRavenResult:
     def __init__(self, individual_res : Result, baseline_res : Result, 
-                 individual_refinement_res : Result, cross_executional_refinement_res : Result, 
+                 individual_refinement_res : Result, 
+                 individual_refinement_milp_res : Result,
+                 cross_executional_refinement_res : Result, 
                  final_res : Result) -> None:
         self.individual_res = individual_res
         self.baseline_res = baseline_res
         self.individual_refinement_res = individual_refinement_res
+        self.individual_refinement_milp_res = individual_refinement_milp_res
         self.cross_executional_refinement_res = cross_executional_refinement_res
         self.final_res = final_res
 
@@ -35,11 +38,15 @@ class AdaptiveRavenResultList:
         individual_acc = 0
         baseline_acc = 0
         individual_refinement_acc = 0
+        individual_refinement_milp_acc = 0
+        cross_ex_acc = 0
         final_acc = 0
 
         individual_time = 0
         baseline_time = 0
         individual_refinement_time = 0
+        individual_refinement_milp_time = 0
+        cross_ex_time = 0
         final_time = 0
         count = 0
         
@@ -55,6 +62,11 @@ class AdaptiveRavenResultList:
             baseline_acc, baseline_time = populate(res.baseline_res, baseline_acc, baseline_time)
             individual_refinement_acc, individual_refinement_time = populate(res.individual_refinement_res, 
                                                                              individual_refinement_acc, individual_refinement_time)
+            
+            individual_refinement_milp_acc, individual_refinement_milp_time = populate(res.individual_refinement_milp_res, 
+                                                                             individual_refinement_milp_acc, 
+                                                                             individual_refinement_milp_time)
+            cross_ex_acc, cross_ex_time = populate(res.cross_executional_refinement_res, cross_ex_acc, cross_ex_time)
             final_acc, final_time = populate(res.final_res, final_acc, final_time)
         assert len(self.res_list) > 0
         scale = 1/ len(self.res_list)
@@ -63,11 +75,15 @@ class AdaptiveRavenResultList:
             file.write(f'individual acc {individual_acc*scale}\n')
             file.write(f'baseline acc {baseline_acc*scale}\n')
             file.write(f'IndivRefine acc {individual_refinement_acc*scale}\n')
+            file.write(f'IndivRefineMILP acc {individual_refinement_milp_acc*scale}\n')            
+            file.write(f'CrossEx acc {cross_ex_acc*scale}\n')
             file.write(f'final acc {final_acc*scale}\n')
 
             file.write(f'individual time {individual_time*scale}\n')
             file.write(f'baseline time {baseline_time*scale}\n')
             file.write(f'IndivRefine time {individual_refinement_time*scale}\n')
+            file.write(f'IndivRefineMILP time {individual_refinement_milp_time*scale}\n')
+            file.write(f'CrossEx time {cross_ex_time*scale}\n')        
             file.write(f'final time {final_time*scale}\n')
 
             file.close()

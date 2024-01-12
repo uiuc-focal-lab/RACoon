@@ -77,7 +77,7 @@ class BoundedModule(nn.Module):
         }
         default_bound_opts.update(bound_opts)
         self.bound_opts = default_bound_opts
-        print('all alpha {}'.format(self.bound_opts['use_full_conv_alpha']))
+        # print('all alpha {}'.format(self.bound_opts['use_full_conv_alpha']))
         self.verbose = verbose
         self.custom_ops = custom_ops if custom_ops is not None else {}
         if device == 'auto':
@@ -126,7 +126,7 @@ class BoundedModule(nn.Module):
             'fix_intermediate_layer_bounds': False,
             # Learning rate for the optimizable parameter alpha in alpha-CROWN.
             # 'lr_alpha': 0.5,
-            'lr_alpha': 0.5,
+            'lr_alpha': 0.2,
             # Learning rate for the optimizable parameter beta in beta-CROWN.
             'lr_beta': 0.05,
             'lr_cut_beta': 5e-3,  # Learning rate for optimizing cut betas.
@@ -1113,7 +1113,8 @@ class BoundedModule(nn.Module):
             cutter=None, decision_thresh=None,
             update_mask=None, multiple_execution=False, execution_count=1, 
             ptb=None, unperturbed_images=None, iteration=None, 
-            baseline_refined_bound={}, intermediate_bound_refinement=False):
+            baseline_refined_bound={}, intermediate_bound_refinement=False, 
+            always_correct_cross_execution=False, cross_refinement_results={}):
         r"""Main function for computing bounds.
 
         Args:
@@ -1267,7 +1268,9 @@ class BoundedModule(nn.Module):
                     multiple_execution=multiple_execution, execution_count=execution_count, 
                     ptb=ptb, unperturbed_images=unperturbed_images, 
                     baseline_refined_bound=baseline_refined_bound, 
-                    intermediate_bound_refinement=intermediate_bound_refinement)
+                    intermediate_bound_refinement=intermediate_bound_refinement,
+                    always_correct_cross_execution=always_correct_cross_execution,
+                    cross_refinement_results=cross_refinement_results)
             if bound_upper:
                 ret2 = self.get_optimized_bounds(
                     x=x, C=C, method=method,
@@ -1281,7 +1284,9 @@ class BoundedModule(nn.Module):
                     multiple_execution=multiple_execution, execution_count=execution_count,
                     ptb=ptb, unperturbed_images=unperturbed_images, 
                     baseline_refined_bound=baseline_refined_bound,
-                    intermediate_bound_refinement=intermediate_bound_refinement)
+                    intermediate_bound_refinement=intermediate_bound_refinement,
+                    always_correct_cross_execution=always_correct_cross_execution, 
+                    cross_refinement_results=cross_refinement_results)
 
             if bound_lower and bound_upper:
                 if return_A:
@@ -1480,7 +1485,7 @@ class BoundedModule(nn.Module):
     from .optimized_bounds import (
         get_optimized_bounds, init_slope, get_cross_execution_params,
         extract_mininum_coef, get_cross_execution_loss, 
-        cross_execution_loss_helper, print_bound_updates) 
+        cross_execution_loss_helper, print_bound_updates, get_final_cross_executional_loss) 
     from .beta_crown import (
         beta_bias, save_best_intermediate_betas,
         print_optimized_beta)

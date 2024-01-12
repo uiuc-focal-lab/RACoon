@@ -74,6 +74,27 @@ def get_unrolling_indices(result, theshold=10):
     return roll_indices, indices
 
 
+#   (/input.1): BoundInput(name="/input.1")
+#   (/1): BoundParams(name="/1")
+#   (/2): BoundParams(name="/2")
+#   (/3): BoundParams(name="/3")
+#   (/4): BoundParams(name="/4")
+#   (/5): BoundParams(name="/5")
+#   (/6): BoundParams(name="/6")
+#   (/7): BoundParams(name="/7")
+#   (/8): BoundParams(name="/8")
+#   (/input): BoundConv(name="/input")
+#   (/input.4): BoundRelu(name="/input.4")
+#   (/input.8): BoundConv(name="/input.8")
+#   (/12): BoundRelu(name="/12")
+#   (/13): BoundFlatten(name="/13")
+#   (/input.12): BoundLinear(name="/input.12")
+#   (/15): BoundRelu(name="/15")
+#   (/16): BoundLinear(name="/16")
+
+
+
+
 def main():
     # Setting parameters.
     my_seed = 2232

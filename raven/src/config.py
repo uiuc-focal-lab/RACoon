@@ -138,7 +138,7 @@ def mnist_data_transform(dataset, net_name):
     if dataset == Dataset.MNIST:
         for name in MNIST_NO_TRANSFORM_NETS:
             if name in net_name:
-                return False
+                return True
         return True
     elif dataset == Dataset.CIFAR10:
         return True
