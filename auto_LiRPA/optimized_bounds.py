@@ -1112,6 +1112,7 @@ def get_optimized_bounds(
         final_cross_executional_loss = self.get_final_cross_executional_loss(lb_coef=lb_coef, lb_bias=lb_bias, execution_count=execution_count,
                                             lower_bound=ret_l.detach(), approx_cross_ex_loss_tensor=approx_cross_execution_loss,
                                             ptb=ptb, unperturbed_images=unperturbed_images)
+        cross_refinement_results['final_loss'] = final_cross_executional_loss.detach().clone()
         print(f'Final cross executional loss {final_cross_executional_loss}')  
     
     if pruning_in_iteration:

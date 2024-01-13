@@ -13,9 +13,10 @@ class RavenArgs:
                 maximum_cross_execution_count=3, baseline_iteration=10,
                 refinement_iterations=30, unroll_layers = False, unroll_layer_count=3,
                 optimize_layers_count = None, full_alpha=False,
-                bounds_for_individual_refinement=False,
+                bounds_for_individual_refinement=True,
                 always_correct_cross_execution=False,
-                parallelize_executions = False,
+                parallelize_executions = False, lp_threshold=None,
+                max_linear_apprx=3,
                 refine_intermediate_bounds = False, dataloading_seed = 0, 
                 result_dir=None, write_file=True) -> None:
         self.raven_mode = raven_mode
@@ -32,7 +33,7 @@ class RavenArgs:
         self.maximum_cross_execution_count = maximum_cross_execution_count
         self.baseline_iteration = baseline_iteration
         self.refinement_iterations = refinement_iterations
-        self.bounds_for_individual_refinement=bounds_for_individual_refinement
+        self.bounds_for_individual_refinement=True 
         self.full_alpha = full_alpha
         self.unroll_layers = unroll_layers
         self.unroll_layer_count = unroll_layer_count
@@ -40,6 +41,8 @@ class RavenArgs:
         self.parallelize_executions = parallelize_executions
         self.refine_intermediate_bounds = refine_intermediate_bounds
         self.optimize_layers_count = optimize_layers_count
+        self.lp_threshold = lp_threshold
+        self.max_linear_apprx = max_linear_apprx
         self.dataloading_seed = dataloading_seed
         self.result_dir = result_dir
         self.write_file = write_file

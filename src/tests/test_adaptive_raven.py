@@ -40,9 +40,12 @@ class TestRaven(TestCase):
                 threshold_execution=10, cross_executional_threshold=4, maximum_cross_execution_count=4, 
                 baseline_iteration=20, refinement_iterations=20, unroll_layers = False, unroll_layer_count=3, 
                 refine_intermediate_bounds =True, optimize_layers_count=2, 
-                bounds_for_individual_refinement=True, dataloading_seed = 0, 
+                bounds_for_individual_refinement=True, dataloading_seed = 0,
+                parallelize_executions=False,
+                lp_threshold=-1.5,
+                max_linear_apprx=3,
                 always_correct_cross_execution = False,
-                result_dir='results', write_file=False)
+                result_dir='results', write_file=True)
             ver.adptiveRaven(raven_args=args)
             eps += 0.01
 

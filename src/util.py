@@ -14,14 +14,14 @@ def generate_indices(indices, threshold, count):
             for j in range(i+1, len(indices)):
                 tuple_list.append((x, indices[j]))
                 if len(tuple_list) >= entries:
-                    return convert_tensor(tuple_list=tuple_list)
+                    return convert_tensor(tuple_list=tuple_list), tuple_list
     elif count == 3:
         for i, x  in enumerate(indices):
             for j in range(i+1, len(indices)):
                 for k in range(j+1, len(indices)):
                     tuple_list.append((x, indices[j], indices[k]))
                     if len(tuple_list) >= entries:
-                        return convert_tensor(tuple_list=tuple_list)
+                        return convert_tensor(tuple_list=tuple_list), tuple_list
     elif count == 4:
         for i, x  in enumerate(indices):
             for j in range(i+1, len(indices)):
@@ -29,11 +29,11 @@ def generate_indices(indices, threshold, count):
                     for m in range(k+1, len(indices)):
                         tuple_list.append((x, indices[j], indices[k], indices[m]))
                         if len(tuple_list) >= entries:
-                            return convert_tensor(tuple_list=tuple_list)
+                            return convert_tensor(tuple_list=tuple_list), tuple_list
     else:
         raise ValueError(f"We don't support cross executions of {count}")
     
     if len(tuple_list) > 0:
-        return convert_tensor(tuple_list=tuple_list)
+        return convert_tensor(tuple_list=tuple_list), tuple_list
     else:
         return None 
