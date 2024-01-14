@@ -70,6 +70,7 @@ def filter_misclassified(nets, inputs, labels):
 
 def get_input_bounds(images, eps, dataset, transform):
     eps_tensor = eps / get_std(dataset=dataset, transform=transform)
+    print(f'eps tensor {eps_tensor}')
     lbs, ubs = [], []
     for img in images:
         img_shape = img.shape
@@ -96,6 +97,6 @@ def get_specification(dataset : Dataset, raven_mode : RavenMode,
         constraint_matrices = get_spec_matrix(images, labels.long(), 10)
     else:
         raise ValueError(f'Output specification of {raven_mode} is not supported')
-    lbs, ubs = get_input_bounds(images=images, eps=eps, dataset=dataset, transform=True)
+    lbs, ubs = get_input_bounds(images=images, eps=eps, dataset=dataset, transform=transform)
     return images, labels, constraint_matrices, lbs, ubs
     

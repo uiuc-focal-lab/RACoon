@@ -17,6 +17,7 @@ class RavenArgs:
                 always_correct_cross_execution=False,
                 parallelize_executions = False, lp_threshold=None,
                 max_linear_apprx=3,
+                device=None,
                 refine_intermediate_bounds = False, dataloading_seed = 0, 
                 result_dir=None, write_file=True) -> None:
         self.raven_mode = raven_mode
@@ -44,6 +45,7 @@ class RavenArgs:
         self.lp_threshold = lp_threshold
         self.max_linear_apprx = max_linear_apprx
         self.dataloading_seed = dataloading_seed
+        self.device = device
         self.result_dir = result_dir
         self.write_file = write_file
 

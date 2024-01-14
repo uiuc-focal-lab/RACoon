@@ -94,7 +94,7 @@ CIFAR_STANDARD_CONV = "convSmallRELU__Point.onnx"
 
 # CIFAR crown-ibp Network
 CIFAR_CROWN_IBP = "cifar_cnn_2layer_width_2_best.pth"
-CIFAR_CROWN_IBP_MEDIUM = "crown_cifar_cnn_3layer_fixed_kernel_3_width_1_best.pth"
+CIFAR_CROWN_IBP_MEDIUM = "cifar_cnn_3layer_fixed_kernel_3_width_1_best.pth"
 
 # CIFAR Networks
 CIFAR_CONV_2_255 = "cifar10_2_255.onnx"  # 49402 neurons
@@ -109,7 +109,7 @@ CIFAR_OVAL_WIDE = "oval21/cifar_wide_kw.onnx"   # 6244 neurons
 CIFAR_OVAL_DEEP = "oval21/cifar_deep_kw.onnx"   # 6756 neurons
 
 CIFAR_CONV_SMALL = "convSmallRELU__Point.onnx"   # 3,604 neurons
-CIFAR_CONV_SMALL_PGD = "cifarconvSmallRELU__PGDK.onnx"   # 3,604 neurons
+CIFAR_CONV_SMALL_PGD = "convSmall_pgd_cifar.onnx"   # 3,604 neurons
 CIFAR_CONV_SMALL_DIFFAI = "cifar10convSmallRELUDiffAI.onnx"   # 3,604 neurons
 CIFAR_CONV_MED = "cifarconvmedRELU__Point.onnx"   # 3,604 neurons
 CIFAR_CONV_BIG = "cifar_convBigRELU__DiffAI.onnx"
@@ -138,7 +138,7 @@ def mnist_data_transform(dataset, net_name):
     if dataset == Dataset.MNIST:
         for name in MNIST_NO_TRANSFORM_NETS:
             if name in net_name:
-                return True
+                return False
         return True
     elif dataset == Dataset.CIFAR10:
         return True

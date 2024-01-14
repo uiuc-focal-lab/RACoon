@@ -33,7 +33,8 @@ class AdaptiveRavenBackend:
         self.ptb = None
         self.input_names = []
         self.final_names = []
-        self.device = 'cuda:2' if torch.cuda.is_available else 'cpu'
+        device = 'cuda:3' if self.args.device is None else self.args.device
+        self.device = device if torch.cuda.is_available else 'cpu'
         self.base_method = 'CROWN'
         self.optimized_method = 'CROWN-Optimized'
         self.individual_res = None
@@ -63,7 +64,7 @@ class AdaptiveRavenBackend:
         self.lb_bias_dict = {}
         self.lower_bnds_dict = {}
         self.devices = {}
-        self.devices[2] = 'cuda:2'
+        self.devices[2] = 'cuda:0'
         self.devices[3] = 'cuda:1'
         self.devices[4] = 'cuda:3'
         self.lock = threading.Lock()
@@ -493,6 +494,8 @@ class AdaptiveRavenBackend:
     def cross_refinement_verified_accuracy(self):
         cross_verified = []
         for i in range(2, self.args.maximum_cross_execution_count+1):
+            if i not in self.cross_ex_loss.keys() or i not in self.tuple_of_indices_cross_ex.keys():
+                continue
             if self.cross_ex_loss[i].shape[0] != len(self.tuple_of_indices_cross_ex[i]):
                 print(f'waring: the cross ex loss length does not match tuple of indices')
                 continue
