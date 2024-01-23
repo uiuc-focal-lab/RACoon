@@ -17,6 +17,7 @@ class RavenArgs:
                 always_correct_cross_execution=False,
                 parallelize_executions = False, lp_threshold=None,
                 max_linear_apprx=3,
+                populate_trace=False,
                 device=None,
                 refine_intermediate_bounds = False, dataloading_seed = 0, 
                 result_dir=None, write_file=True) -> None:
@@ -44,6 +45,10 @@ class RavenArgs:
         self.optimize_layers_count = optimize_layers_count
         self.lp_threshold = lp_threshold
         self.max_linear_apprx = max_linear_apprx
+        self.populate_trace = populate_trace
+        if populate_trace:
+            self.always_correct_cross_execution = True
+            print(f'always compute trace {self.always_correct_cross_execution}')
         self.dataloading_seed = dataloading_seed
         self.device = device
         self.result_dir = result_dir

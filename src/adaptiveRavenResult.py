@@ -1,11 +1,14 @@
 from src.common import Dataset
 class Result:
     def __init__(self, final_result, final_time,
-                result_trace=None, time_trace=None) -> None:
+                result_trace=None, time_trace=None, lp_result=None, 
+                lp_time=None) -> None:
         self.final_result = final_result
         self.final_time = final_time
         self.result_trace = result_trace
         self.time_trace = time_trace
+        self.lp_result = lp_result
+        self.lp_time = lp_time
 
 class AdaptiveRavenResult:
     def __init__(self, individual_res : Result, baseline_res : Result, 

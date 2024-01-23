@@ -63,6 +63,11 @@ class AdaptiveRavenBackend:
         self.lb_coef_dict = {}
         self.lb_bias_dict = {}
         self.lower_bnds_dict = {}
+        self.lb_coef_dict_copy = None
+        self.lb_bias_dict_copy = None
+        self.lower_bnds_dict_copy = None
+        self.bound_traces = {}
+        self.refinement_time_traces = {} 
         self.devices = {}
         self.devices[2] = 'cuda:0'
         self.devices[3] = 'cuda:1'
@@ -181,12 +186,14 @@ class AdaptiveRavenBackend:
         # print(f'filtered min_indices {min_logit_diff[indices]}')
         return indices
 
-    def populate_cross_indices(self, cross_executional_indices, count):
+    def populate_cross_indices(self, cross_executional_indices, count, populate_tuples=False):
         if count > 4:
             raise ValueError(f'Execution number of {count} is not supported.')
         indices = cross_executional_indices[:min(len(cross_executional_indices), self.args.cross_executional_threshold)]
         final_indices, tuple_indices = util.generate_indices(indices=indices, threshold=self.args.threshold_execution, count=count)
-        self.tuple_of_indices_cross_ex[count] = tuple_indices
+        # print(f'ex count {count} tuple list {tuple_indices} cross ex indices {final_indices}')
+        if populate_tuples:
+            self.tuple_of_indices_cross_ex[count] = tuple_indices
         return final_indices
 
     def store_refined_bounds(self):
@@ -199,6 +206,36 @@ class AdaptiveRavenBackend:
                         self.refined_bounds_multi_ex[3][node_name] = [node.lower.detach().clone().to(self.devices[3]), node.upper.detach().clone().to(self.devices[3])]
                         self.refined_bounds_multi_ex[4][node_name] = [node.lower.detach().clone().to(self.devices[4]), node.upper.detach().clone().to(self.devices[4])]
 
+    def copy_coef_dict(self):   
+        self.lb_coef_dict_copy = deepcopy(self.lb_coef_dict)
+        self.lb_bias_dict_copy = deepcopy(self.lb_bias_dict)
+        self.lower_bnds_dict_copy = deepcopy(self.lower_bnds_dict) 
+
+    def analyze_trace(self, execution_count, lA, lb_bias):
+        original_indices = self.indices_for[execution_count].view(execution_count, -1).T
+        bound_indices = self.indices_for_refined_bounds[execution_count].view(execution_count, -1).T
+        for i, idx in enumerate(bound_indices):
+            general_bound = torch.max(self.bound_traces[1][-1][idx])
+            cross_ex_bound = self.bound_traces[execution_count][-1][i]
+            if general_bound >= 0.0 or cross_ex_bound < 0.0:
+                continue        
+            print(f'final bounds {general_bound}')
+            print(f'cross ex bounds {cross_ex_bound}')
+            lp_bound = None
+            milp_verifier = RavenLPtransformer(eps=self.prop.eps, inputs=self.prop.inputs, batch_size=self.args.count_per_prop,
+                                    roll_indices=None, lb_coef=lA, lb_bias=lb_bias,
+                                    lb_coef_dict=self.lb_coef_dict_copy, lb_bias_dict=self.lb_bias_dict_copy, 
+                                    non_verified_indices=original_indices[i],
+                                    lb_penultimate_coef=None, lb_penultimate_bias=None, ub_penultimate_coef=None,
+                                    ub_penultimate_bias=None, lb_penult=None, ub_penult=None,
+                                    constraint_matrices=self.prop.constraint_matrices,
+                                    input_lbs=self.prop.lbs, input_ubs=self.prop.ubs, disable_unrolling=True)
+            lp_bound = milp_verifier.formulate_constriants_from_dict(final_weight=self.final_layer_weights[0],
+                                                        final_bias=self.final_layer_biases[0]).solv_LP()
+            print(f'lp bound {lp_bound}')
+
+    
+    
     def run_refinement(self, indices, device, multiple_execution=False,
                     execution_count=None, iteration=None, 
                     indices_for_refined_bounds=None, refine_intermediate_bounds=False,
@@ -236,7 +273,8 @@ class AdaptiveRavenBackend:
                                            baseline_refined_bound=filtered_dict, 
                                            intermediate_bound_refinement=refine_intermediate_bounds,
                                            always_correct_cross_execution=self.args.always_correct_cross_execution,
-                                           cross_refinement_results=cross_ex_result)
+                                           cross_refinement_results=cross_ex_result,
+                                           populate_trace=self.args.populate_trace)
             lower_bnd, _, A_dict = result
             lA = A_dict[self.final_names[0]][self.input_names[0]]['lA']
             lbias = A_dict[self.final_names[0]][self.input_names[0]]['lbias']
@@ -244,8 +282,16 @@ class AdaptiveRavenBackend:
         
         if multiple_execution:
             self.cross_ex_loss[execution_count] = cross_ex_result['final_loss']
-            # print(f'cross ex loss {self.cross_ex_loss[execution_count]}')
-        
+            if 'cross_refinement_trace' in cross_ex_result.keys():
+                self.bound_traces[execution_count] = cross_ex_result['cross_refinement_trace']
+            if 'cross_refinement_time_trace' in cross_ex_result.keys():
+                self.refinement_time_traces[execution_count] = cross_ex_result['cross_refinement_time_trace']
+        else:
+            if 'base_refinement_trace' in cross_ex_result.keys():
+                self.bound_traces[1] = cross_ex_result['base_refinement_trace']
+            if 'base_refinement_time_trace' in cross_ex_result.keys():
+                self.refinement_time_traces[1] = cross_ex_result['base_refinement_time_trace']
+
         if populate_results:
             self.populate_coef_and_bias(indices=indices, lb_coef=lA, lb_bias=lbias, lower_bnd=lower_bnd.min(axis=1)[0])
         return lA, lbias, lower_bnd      
@@ -279,7 +325,7 @@ class AdaptiveRavenBackend:
         indices = cross_executional_indices.detach().cpu().numpy()
         total_length = min(length, self.args.maximum_cross_execution_count)
         for i in range(2, total_length + 1):
-            self.indices_for[i] = self.populate_cross_indices(cross_executional_indices=indices, count=i)
+            self.indices_for[i] = self.populate_cross_indices(cross_executional_indices=indices, count=i, populate_tuples=True)
             self.indices_for[i] = self.indices_for[i].to(self.devices[i])
             self.indices_for_refined_bounds[i] = self.populate_cross_indices(cross_executional_indices=self.cross_executional_indices_from_refinement,
                                                                               count=i)
@@ -300,36 +346,40 @@ class AdaptiveRavenBackend:
         length = cross_executional_indices.shape[0]
         indices = cross_executional_indices.detach().cpu().numpy()
         if length > 1 and 2 <= self.args.maximum_cross_execution_count:
-            self.indices_for[2] = self.populate_cross_indices(cross_executional_indices=indices, count=2)
+            self.indices_for[2] = self.populate_cross_indices(cross_executional_indices=indices, count=2, populate_tuples=True)
             self.indices_for_refined_bounds[2] = self.populate_cross_indices(cross_executional_indices=self.cross_executional_indices_from_refinement,
                                                                               count=2)
+            # print(f'indices for 2 {self.indices_for_refined_bounds[2]}')
+            # print(f'tuple indices {self.indices_for_refined_bounds[2].view(2, -1).T}')
             lA, lbias, lower_bnd = self.run_cross_executional_refinement(count=2)
-            # if lower_bnd is not None:
-            #     print(f'count 2 lower bound {lower_bnd.detach().cpu().min(axis=1)[0]}')
+            if self.args.populate_trace:
+                self.analyze_trace(execution_count=2, lA=lA, lb_bias=lbias)
         
         if length > 2 and 3 <= self.args.maximum_cross_execution_count:
-            self.indices_for[3] = self.populate_cross_indices(cross_executional_indices=indices, count=3)
+            self.indices_for[3] = self.populate_cross_indices(cross_executional_indices=indices, count=3, populate_tuples=True)
             self.indices_for_refined_bounds[3] = self.populate_cross_indices(cross_executional_indices=self.cross_executional_indices_from_refinement,
                                                                               count=3)
+            # print(f'indices for 3 {self.indices_for_refined_bounds[3]}')
+            # print(f'tuple indices {self.indices_for_refined_bounds[3].view(3, -1).T}')
             lA, lbias, lower_bnd = self.run_cross_executional_refinement(count=3)
-            # if lower_bnd is not None:
-            #     print(f'count 3 lower bound {lower_bnd.detach().cpu().min(axis=1)[0]}')
-        
+            if self.args.populate_trace:
+                self.analyze_trace(execution_count=3, lA=lA, lb_bias=lbias)
+
         if length > 3 and 4 <= self.args.maximum_cross_execution_count:
-            self.indices_for[4] = self.populate_cross_indices(cross_executional_indices=indices, count=4)
+            self.indices_for[4] = self.populate_cross_indices(cross_executional_indices=indices, count=4, populate_tuples=True)
             self.indices_for_refined_bounds[4] = self.populate_cross_indices(cross_executional_indices=self.cross_executional_indices_from_refinement,
                                                                               count=4)
+            # print(f'indices for 4 {self.indices_for_refined_bounds[4]}')
+            # print(f'tuple indices {self.indices_for_refined_bounds[4].view(4, -1).T}')
             lA, lbias, lower_bnd = self.run_cross_executional_refinement(count=4)
-            # if lower_bnd is not None:
-            #     print(f'count 4 lower bound {lower_bnd.detach().cpu().min(axis=1)[0]}')
+            if self.args.populate_trace:
+                self.analyze_trace(execution_count=4, lA=lA, lb_bias=lbias)
 
     def prune_linear_apprx(self, ind):
-        # print(f'pruning linear bnds {ind}')
         new_coef_list = []
         new_bias_list = []
         new_lb_list = []
         min_lb = min(self.lower_bnds_dict[ind])
-        # print(f'min lb {min_lb} list {self.lower_bnds_dict[ind]}')
         for i in range(len(self.lower_bnds_dict[ind])):
             if self.lower_bnds_dict[ind][i] > min_lb:
                 new_bias_list.append(self.lb_bias_dict[ind][i])
@@ -390,6 +440,7 @@ class AdaptiveRavenBackend:
         print(f'individual refinement lower bound {lower_bnd.detach().cpu().min(axis=1)[0]}')
         # exit()
         self.store_refined_bounds()
+        self.copy_coef_dict()
 
         self.cross_executional_indices_from_refinement = self.select_indices(lower_bound=lower_bnd, threshold=self.args.cross_executional_threshold)
         self.cross_executional_indices = self.refinement_indices[self.cross_executional_indices_from_refinement]

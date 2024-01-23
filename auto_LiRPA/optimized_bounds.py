@@ -8,6 +8,7 @@ import torch
 from torch import optim
 from .cuda_utils import double2float
 from .utils import logger
+from time import time
 
 
 def _set_alpha(optimizable_activations, parameters, alphas, lr):
@@ -591,11 +592,12 @@ def get_optimized_bounds(
         ptb=None, unperturbed_images=None, baseline_refined_bound={},
         intermediate_bound_refinement=False, 
         always_correct_cross_execution=False,
-        cross_refinement_results={}):
+        cross_refinement_results={}, populate_trace=False):
     """
     Optimize CROWN lower/upper bounds by alpha and/or beta.
     """
 
+    start_time = time()
     opts = self.bound_opts['optimize_bound_args']
     iteration = opts['iteration']
     beta = opts['enable_beta_crown']
@@ -666,7 +668,7 @@ def get_optimized_bounds(
         betas, best_betas, coeffs = ret_set_beta[:3]
         dense_coeffs_mask, best_coeffs, biases, best_biases = ret_set_beta[3:]
 
-    start = time.time()
+    start_time = time()
 
     if (decision_thresh is not None
             and isinstance(decision_thresh, torch.Tensor)):
@@ -789,7 +791,8 @@ def get_optimized_bounds(
                 baseline_refined_bound=baseline_refined_bound,
                 intermediate_bound_refinement=intermediate_bound_refinement,
                 always_correct_cross_execution=always_correct_cross_execution, 
-                cross_refinement_results=cross_refinement_results)
+                cross_refinement_results=cross_refinement_results,
+                populate_trace=populate_trace)
 
         ret_l, ret_u = ret[0], ret[1]
 
@@ -803,14 +806,35 @@ def get_optimized_bounds(
                 final_cross_executional_loss = self.get_final_cross_executional_loss(lb_coef, lb_bias, execution_count, ret_l,
                                         ptb, unperturbed_images, approx_cross_execution_loss)
                 cross_execution_loss = -final_cross_executional_loss.sum()
-                print(f'cross executional loss {final_cross_executional_loss}')
+                # print(f'cross executional loss {final_cross_executional_loss}')
             else:
                 cross_execution_loss = -approx_cross_execution_loss.sum()
+
+            with torch.no_grad():            
+                if populate_trace:
+                    if 'cross_refinement_trace' not in cross_refinement_results.keys():
+                        cross_refinement_results['cross_refinement_trace'] = []
+                        cross_refinement_results['cross_refinement_time_trace'] = []
+                    if not always_correct_cross_execution:
+                        raise ValueError(f'Only approximate cross executional loss is avaiable')
+                    cross_refinement_results['cross_refinement_trace'].append(final_cross_executional_loss.detach().clone())
+                    cross_refinement_results['cross_refinement_time_trace'].append(time() - start_time)
+                # print(f'stored cross ex bound {final_cross_executional_loss}')         
+            
             if i == iteration - 1:
                 print(f'approx cross execution loss {approx_cross_execution_loss}')
         else:
             cross_execution_loss = None
-        
+
+        with torch.no_grad():       
+            if not multiple_execution and populate_trace:
+                if 'base_refinement_trace' not in cross_refinement_results.keys():
+                    cross_refinement_results['base_refinement_trace'] = []
+                    cross_refinement_results['base_refinement_time_trace'] = []
+                cross_refinement_results['base_refinement_trace'].append(ret_l.detach().clone().min(axis=1)[0])
+                cross_refinement_results['base_refinement_time_trace'].append(time() - start_time)
+                # print(f'stored baseline trace {ret_l.detach().clone().min(axis=1)[0]}')
+
         if (self.cut_used and i % cutter.log_interval == 0
                 and len(self.cut_beta_params) > 0):
             # betas[-1]: (2(0 lower, 1 upper), spec, batch, num_constrs)

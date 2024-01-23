@@ -14,6 +14,8 @@ def generate_indices(indices, threshold, count):
             for j in range(i+1, len(indices)):
                 tuple_list.append((x, indices[j]))
                 if len(tuple_list) >= entries:
+                    # print(f'original indices {indices}')
+                    # print(f'tuple list {tuple_list} cross ex indices {convert_tensor(tuple_list=tuple_list)}')
                     return convert_tensor(tuple_list=tuple_list), tuple_list
     elif count == 3:
         for i, x  in enumerate(indices):

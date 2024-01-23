@@ -1114,7 +1114,8 @@ class BoundedModule(nn.Module):
             update_mask=None, multiple_execution=False, execution_count=1, 
             ptb=None, unperturbed_images=None, iteration=None, 
             baseline_refined_bound={}, intermediate_bound_refinement=False, 
-            always_correct_cross_execution=False, cross_refinement_results={}):
+            always_correct_cross_execution=False, cross_refinement_results={}, 
+            populate_trace=False):
         r"""Main function for computing bounds.
 
         Args:
@@ -1270,7 +1271,7 @@ class BoundedModule(nn.Module):
                     baseline_refined_bound=baseline_refined_bound, 
                     intermediate_bound_refinement=intermediate_bound_refinement,
                     always_correct_cross_execution=always_correct_cross_execution,
-                    cross_refinement_results=cross_refinement_results)
+                    cross_refinement_results=cross_refinement_results, populate_trace=populate_trace)
             if bound_upper:
                 ret2 = self.get_optimized_bounds(
                     x=x, C=C, method=method,
@@ -1286,7 +1287,7 @@ class BoundedModule(nn.Module):
                     baseline_refined_bound=baseline_refined_bound,
                     intermediate_bound_refinement=intermediate_bound_refinement,
                     always_correct_cross_execution=always_correct_cross_execution, 
-                    cross_refinement_results=cross_refinement_results)
+                    cross_refinement_results=cross_refinement_results, populate_trace=populate_trace)
 
             if bound_lower and bound_upper:
                 if return_A:
