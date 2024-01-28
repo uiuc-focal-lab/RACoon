@@ -47,6 +47,8 @@ class AdaptiveRavenBackend:
         self.final_res = None
         self.baseline_lowerbound = None
         self.number_of_class = 10
+        if self.args.raven_mode == RavenMode.UAP_BINARY:
+            self.number_of_class = 10
         self.final_layer_weights = []
         self.final_layer_biases = []
         self.refinement_indices = None
@@ -691,7 +693,7 @@ class AdaptiveRavenBackend:
 
     def verify(self) -> AdaptiveRavenResult:
         self.initialize_models()
-        if self.args.raven_mode != RavenMode.UAP:
+        if self.args.raven_mode not in [RavenMode.UAP, RavenMode.UAP_BINARY]:
             raise NotImplementedError(f'Currently {self.args.raven_mode} is not supported')
         assert len(self.bounded_models) == 1
         # Get the baseline results.

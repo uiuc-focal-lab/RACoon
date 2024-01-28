@@ -84,10 +84,56 @@ def get_input_bounds(images, eps, dataset, transform):
     ubs = torch.stack(ubs, dim=0)
     return lbs, ubs
 
+def process_input_for_binary(inputs, labels, target_count=0):
+    new_inputs = []
+    new_labels = []
+    count = 0
+    binary_label = [0, 1]
+    for i in range(len(inputs)):
+        if labels[i] in binary_label and count < target_count:
+            new_inputs.append(inputs[i])
+            new_labels.append(labels[i])
+            count += 1
+    new_inputs = torch.stack(new_inputs)
+    new_labels = torch.stack(new_labels)
+    return new_inputs, new_labels
+
+def get_binary_spec(dataset : Dataset, raven_mode : RavenMode,
+                     count, nets, eps, dataloading_seed, net_names):
+    assert dataset == Dataset.MNIST
+    transform = mnist_data_transform(dataset=dataset, net_name=net_names[0])
+    testloader = prepare_data(dataset=dataset, train=False, batch_size=count*15, transform=transform)
+    images, labels = next(iter(testloader))
+    images, labels = filter_misclassified(nets=nets, inputs=images, labels=labels)
+    images, labels = process_input_for_binary(inputs=images, labels=labels, target_count=count)
+    if raven_mode in [RavenMode.UAP_BINARY]:
+        constraint_matrices = get_spec_matrix(images, labels.long(), 10)
+        # org_shape = constraint_matrices.shape
+        # assert len(org_shape) == 3
+        # length = constraint_matrices.shape[0]
+        # idx1 = [i for i in range(length)]
+        # idx2 = [0 for i in range(length)]
+        # constraint_matrices = constraint_matrices[idx1, idx2].reshape((org_shape[0], 1, org_shape[2]))
+        for x in constraint_matrices:
+            for j in range(1, 9):
+                x[j] = x[0]
+        print(f'constraint matrices shape {constraint_matrices.shape}')
+        print(f'constraint matrice for label {labels[0]}\n\n {constraint_matrices[0]}')
+        print(f'constraint matrice for label {labels[1]}\n\n {constraint_matrices[1]}')
+    else:
+        raise ValueError(f'Output specification of {raven_mode} is not supported')
+    lbs, ubs = get_input_bounds(images=images, eps=eps, dataset=dataset, transform=transform)
+    return images, labels, constraint_matrices, lbs, ubs
+
 
 def get_specification(dataset : Dataset, raven_mode : RavenMode,
                      count, nets, eps, dataloading_seed, net_names):
     assert len(net_names) > 0
+    if raven_mode is RavenMode.UAP_BINARY:
+        print(f'\nloading UAP Binary')
+        return get_binary_spec(dataset=dataset, raven_mode=raven_mode, count=count, 
+                               nets=nets, eps=eps, dataloading_seed=dataloading_seed, 
+                               net_names=net_names)
     transform = mnist_data_transform(dataset=dataset, net_name=net_names[0])
     testloader = prepare_data(dataset=dataset, train=False, batch_size=count*3, transform=transform)
     images, labels = next(iter(testloader))
