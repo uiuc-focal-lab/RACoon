@@ -1,4 +1,7 @@
 from src.common import Dataset
+import torch
+
+
 class Result:
     def __init__(self, final_result, final_time,
                 result_trace=None, time_trace=None, lp_result=None, 
@@ -27,7 +30,57 @@ class AdaptiveRavenResultList:
     def __init__(self, args) -> None:
         self.res_list = []
         self.args = args
-    
+        self.individual_refinement_bounds_trace = {}
+        self.individual_refinement_time_trace = {}
+        self.individual_refinement_lp_time = {}
+        self.cross_ex_bounds_trace = {}
+        self.cross_ex_time_trace = {}
+        self.individual_lp_bound = {}
+        self.cross_ex_lp_bound = {}
+        self.cross_ex_lp_time = {}
+
+    def populate_trace(self, execution_count, individual_bound_trace, individual_time_trace,
+                                cross_ex_bounds_trace, cross_ex_time_trace, 
+                                individual_lp_bound, individual_lp_time,
+                                cross_ex_lp_bound, cross_ex_lp_time):
+        self.individual_refinement_bounds_trace[execution_count] = individual_bound_trace
+        self.individual_refinement_time_trace[execution_count] = individual_time_trace
+        self.cross_ex_bounds_trace[execution_count] = cross_ex_bounds_trace
+        self.cross_ex_time_trace[execution_count] = cross_ex_time_trace
+        self.individual_lp_bound[execution_count] = individual_lp_bound
+        self.cross_ex_lp_bound[execution_count] = cross_ex_lp_bound
+        self.individual_refinement_lp_time[execution_count] = individual_lp_time
+        self.cross_ex_lp_time[execution_count]=cross_ex_lp_time
+
+    def populate_or_replace_trace(self, execution_count, individual_bound_trace, individual_time_trace,
+                                cross_ex_bounds_trace, cross_ex_time_trace, 
+                                individual_lp_bound, individual_lp_time,
+                                cross_ex_lp_bound, cross_ex_lp_time):
+        if execution_count not in self.individual_refinement_bounds_trace.keys():
+            self.populate_trace(execution_count, individual_bound_trace, individual_time_trace,
+                                cross_ex_bounds_trace, cross_ex_time_trace, 
+                                individual_lp_bound, individual_lp_time,
+                                cross_ex_lp_bound, cross_ex_lp_time)
+            return
+        if self.individual_lp_bound[execution_count] >= 0.0 and individual_lp_bound < 0.0:
+            self.populate_trace(execution_count, individual_bound_trace, individual_time_trace,
+                                cross_ex_bounds_trace, cross_ex_time_trace, 
+                                individual_lp_bound, individual_lp_time,
+                                cross_ex_lp_bound, cross_ex_lp_time)
+            return
+
+        if self.individual_lp_bound[execution_count] < 0.0:
+            return
+        
+        prev_bound_diff = self.cross_ex_bounds_trace[execution_count][-1] - self.individual_refinement_bounds_trace[execution_count][-1]
+        if (cross_ex_bounds_trace[-1] - individual_bound_trace[-1]) > prev_bound_diff:
+            self.populate_trace(execution_count, individual_bound_trace, individual_time_trace,
+                                cross_ex_bounds_trace, cross_ex_time_trace, 
+                                individual_lp_bound, individual_lp_time,
+                                cross_ex_lp_bound, cross_ex_lp_time)
+            return
+
+
     def add_res(self, res : AdaptiveRavenResult):
         self.res_list.append(res)
     
@@ -36,6 +89,61 @@ class AdaptiveRavenResultList:
         filename = self.args.result_dir + '/' + f'{self.args.net_names[0]}_{self.args.count_per_prop}_{eps}.dat'
         file = open(filename, 'a+')
         return file
+
+    def bound_file(self, ex_count):
+        eps = self.args.eps if self.args.dataset == Dataset.MNIST else self.args.eps * 255
+        filename = 'bounds_ablation' + '/' + f'{self.args.net_names[0]}_{ex_count}_{eps}.dat'
+        file = open(filename, 'a+')
+        return file
+
+    def write_bounds(self):
+
+        for ex_count in self.individual_refinement_bounds_trace.keys():
+            if ex_count not in self.cross_ex_bounds_trace.keys():
+                continue
+            file = self.bound_file(ex_count=ex_count)
+            
+            indiv_bnd_trace = self.individual_refinement_bounds_trace[ex_count]
+            # print(f'inv bnd trace {indiv_bnd_trace}')
+            cross_ex_bnd_trace = self.cross_ex_bounds_trace[ex_count]
+            # print(f'cross ex bnd trace {cross_ex_bnd_trace}')
+            indiv_time_trace = self.individual_refinement_time_trace[ex_count]
+            cross_ex_time_trace = self.cross_ex_time_trace[ex_count]
+            length = max(indiv_bnd_trace.shape[0], cross_ex_bnd_trace.shape[0])
+            for i in range(length):
+                inv_bnd = indiv_bnd_trace[min(i, indiv_bnd_trace.shape[0] -1)]
+                cross_ex_bnd = cross_ex_bnd_trace[min(i, cross_ex_bnd_trace.shape[0] -1)]
+                if type(inv_bnd) is torch.Tensor:
+                    inv_bnd = inv_bnd.item()
+                if type(cross_ex_bnd) is torch.Tensor:
+                    cross_ex_bnd = cross_ex_bnd.item()
+                file.write(f'bounds: {inv_bnd} {cross_ex_bnd}\n') 
+
+            file.write(f'lp_bound: {self.individual_lp_bound[ex_count]} {self.cross_ex_lp_bound[ex_count]}\n')
+            file.write(f'lp_time: {self.individual_refinement_lp_time[ex_count]} {self.cross_ex_lp_time[ex_count]}\n')        
+            file.close()
+
+    def bounds_comparsion(self):
+        for res in self.res_list:
+            cross_ex_res = res.cross_executional_refinement_res
+            indivudiual_res = res.individual_refinement_res
+            if cross_ex_res.result_trace is None or indivudiual_res.result_trace is None:
+                continue
+            for ex_count in cross_ex_res.result_trace.keys():
+                if ex_count not in indivudiual_res.result_trace.keys():
+                    continue
+                self.populate_or_replace_trace(execution_count=ex_count,
+                                            individual_bound_trace=indivudiual_res.result_trace[ex_count],
+                                            individual_time_trace=indivudiual_res.time_trace[ex_count],
+                                            cross_ex_bounds_trace=cross_ex_res.result_trace[ex_count],
+                                            cross_ex_time_trace=cross_ex_res.time_trace[ex_count], 
+                                            individual_lp_bound=indivudiual_res.lp_result[ex_count],
+                                            individual_lp_time=indivudiual_res.lp_time[ex_count],
+                                            cross_ex_lp_bound=cross_ex_res.lp_result[ex_count],
+                                            cross_ex_lp_time=cross_ex_res.lp_time[ex_count])
+        self.write_bounds()
+        
+
 
     def analyze(self):
         individual_acc = 0
@@ -90,3 +198,5 @@ class AdaptiveRavenResultList:
             file.write(f'final time {final_time*scale}\n')
 
             file.close()
+        if self.args.populate_trace:
+            self.bounds_comparsion()

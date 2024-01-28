@@ -1,0 +1,12 @@
+individual acc 59.0
+baseline acc 66.0
+IndivRefine acc 63.0
+IndivRefineMILP acc 67.0
+CrossEx acc 71.0
+final acc 71.0
+individual time 0.017955446243286134
+baseline time 0.9588435411453248
+IndivRefine time 0.5842235565185547
+IndivRefineMILP time 2.0113835096359254
+CrossEx time 3.098658633232117
+final time 3.9813330411911014

@@ -69,6 +69,14 @@ class AdaptiveRavenBackend:
         self.bound_traces = {}
         self.refinement_time_traces = {} 
         self.devices = {}
+        self.individual_refinement_bounds_trace = {}
+        self.individual_refinement_time_trace = {}
+        self.individual_refinement_lp_time = {}
+        self.cross_ex_bounds_trace = {}
+        self.cross_ex_time_trace = {}
+        self.individual_lp_bound = {}
+        self.cross_ex_lp_bound = {}
+        self.cross_ex_lp_time = {}
         self.devices[2] = 'cuda:0'
         self.devices[3] = 'cuda:1'
         self.devices[4] = 'cuda:3'
@@ -209,7 +217,48 @@ class AdaptiveRavenBackend:
     def copy_coef_dict(self):   
         self.lb_coef_dict_copy = deepcopy(self.lb_coef_dict)
         self.lb_bias_dict_copy = deepcopy(self.lb_bias_dict)
-        self.lower_bnds_dict_copy = deepcopy(self.lower_bnds_dict) 
+        self.lower_bnds_dict_copy = deepcopy(self.lower_bnds_dict)
+
+    def populate_trace(self, execution_count, individual_bound_trace, individual_time_trace,
+                                cross_ex_bounds_trace, cross_ex_time_trace, 
+                                individual_lp_bound, individual_lp_time,
+                                cross_ex_lp_bound, cross_ex_lp_time):
+        self.individual_refinement_bounds_trace[execution_count] = individual_bound_trace
+        self.individual_refinement_time_trace[execution_count] = individual_time_trace
+        self.cross_ex_bounds_trace[execution_count] = cross_ex_bounds_trace
+        self.cross_ex_time_trace[execution_count] = cross_ex_time_trace
+        self.individual_lp_bound[execution_count] = individual_lp_bound
+        self.cross_ex_lp_bound[execution_count] = cross_ex_lp_bound
+        self.individual_refinement_lp_time[execution_count] = individual_lp_time
+        self.cross_ex_lp_time[execution_count]=cross_ex_lp_time
+
+    def populate_or_replace_trace(self, execution_count, individual_bound_trace, individual_time_trace,
+                                cross_ex_bounds_trace, cross_ex_time_trace, 
+                                individual_lp_bound, individual_lp_time,
+                                cross_ex_lp_bound, cross_ex_lp_time):
+        if execution_count not in self.individual_refinement_bounds_trace.keys():
+            self.populate_trace(execution_count, individual_bound_trace, individual_time_trace,
+                                cross_ex_bounds_trace, cross_ex_time_trace, 
+                                individual_lp_bound, individual_lp_time,
+                                cross_ex_lp_bound, cross_ex_lp_time)
+            return
+        if self.individual_lp_bound[execution_count] >= 0.0 and individual_lp_bound < 0.0:
+            self.populate_trace(execution_count, individual_bound_trace, individual_time_trace,
+                                cross_ex_bounds_trace, cross_ex_time_trace, 
+                                individual_lp_bound, individual_lp_time,
+                                cross_ex_lp_bound, cross_ex_lp_time)
+            return
+
+        if self.individual_lp_bound[execution_count] < 0.0:
+            return
+        
+        prev_bound_diff = self.cross_ex_bounds_trace[execution_count][-1] - self.individual_refinement_bounds_trace[execution_count][-1]
+        if (cross_ex_bounds_trace[-1] - individual_bound_trace[-1]) > prev_bound_diff:
+            self.populate_trace(execution_count, individual_bound_trace, individual_time_trace,
+                                cross_ex_bounds_trace, cross_ex_time_trace, 
+                                individual_lp_bound, individual_lp_time,
+                                cross_ex_lp_bound, cross_ex_lp_time)
+            return
 
     def analyze_trace(self, execution_count, lA, lb_bias):
         original_indices = self.indices_for[execution_count].view(execution_count, -1).T
@@ -219,9 +268,10 @@ class AdaptiveRavenBackend:
             cross_ex_bound = self.bound_traces[execution_count][-1][i]
             if general_bound >= 0.0 or cross_ex_bound < 0.0:
                 continue        
-            print(f'final bounds {general_bound}')
-            print(f'cross ex bounds {cross_ex_bound}')
-            lp_bound = None
+            # print(f'final bounds {general_bound}')
+            # print(f'cross ex bounds {cross_ex_bound}')
+            start_time = time.time()
+            individual_lp_bound = None
             milp_verifier = RavenLPtransformer(eps=self.prop.eps, inputs=self.prop.inputs, batch_size=self.args.count_per_prop,
                                     roll_indices=None, lb_coef=lA, lb_bias=lb_bias,
                                     lb_coef_dict=self.lb_coef_dict_copy, lb_bias_dict=self.lb_bias_dict_copy, 
@@ -230,10 +280,46 @@ class AdaptiveRavenBackend:
                                     ub_penultimate_bias=None, lb_penult=None, ub_penult=None,
                                     constraint_matrices=self.prop.constraint_matrices,
                                     input_lbs=self.prop.lbs, input_ubs=self.prop.ubs, disable_unrolling=True)
-            lp_bound = milp_verifier.formulate_constriants_from_dict(final_weight=self.final_layer_weights[0],
+            individual_lp_bound = milp_verifier.formulate_constriants_from_dict(final_weight=self.final_layer_weights[0],
                                                         final_bias=self.final_layer_biases[0]).solv_LP()
-            print(f'lp bound {lp_bound}')
+            individual_lp_time = time.time() - start_time
 
+            start_time = time.time()
+            milp_verifier = RavenLPtransformer(eps=self.prop.eps, inputs=self.prop.inputs, batch_size=self.args.count_per_prop,
+                                    roll_indices=None, lb_coef=lA, lb_bias=lb_bias,
+                                    lb_coef_dict=self.lb_coef_dict, lb_bias_dict=self.lb_bias_dict, 
+                                    non_verified_indices=original_indices[i],
+                                    lb_penultimate_coef=None, lb_penultimate_bias=None, ub_penultimate_coef=None,
+                                    ub_penultimate_bias=None, lb_penult=None, ub_penult=None,
+                                    constraint_matrices=self.prop.constraint_matrices,
+                                    input_lbs=self.prop.lbs, input_ubs=self.prop.ubs, disable_unrolling=True)
+            cross_ex_lp_bound = milp_verifier.formulate_constriants_from_dict(final_weight=self.final_layer_weights[0],
+                                                        final_bias=self.final_layer_biases[0]).solv_LP()
+            cross_ex_lp_time = time.time() - start_time
+            print(f'individual lp time {individual_lp_time}')
+            print(f'cross ex lp time {cross_ex_lp_time}') 
+            # print(f'indiv lp bound {individual_lp_bound}')
+            # print(f'cross execution lp bound {cross_ex_lp_bound}')
+            # print(f'baseline lb shape {self.baseline_lowerbound.shape}')
+            base_lb = torch.min(self.baseline_lowerbound, axis=1)[0]
+            general_bound_trace = [torch.max(base_lb[original_indices[i]])]
+            cross_ex_bound_trace = torch.stack(self.bound_traces[execution_count], dim=0)[::, i]
+            # print(f'tensors for concat {general_bound_trace[0]} {cross_ex_bound_trace}')
+            cross_ex_bound_trace = torch.cat((torch.tensor(general_bound_trace, device=cross_ex_bound_trace.device), cross_ex_bound_trace), dim=0)
+            for x in self.bound_traces[1]:
+                general_bound_trace.append(torch.max(x[idx]).item())
+            general_bound_trace = torch.tensor(general_bound_trace)
+            # print(f'general bound trace {general_bound_trace}')
+            # print(f'cross ex bound trace {cross_ex_bound_trace}')
+            self.populate_or_replace_trace(execution_count=execution_count, 
+                                       individual_bound_trace=general_bound_trace, 
+                                       individual_time_trace=self.refinement_time_traces[1],
+                                       cross_ex_bounds_trace=cross_ex_bound_trace,
+                                       cross_ex_time_trace=self.refinement_time_traces[execution_count],
+                                       individual_lp_bound=individual_lp_bound,
+                                       cross_ex_lp_bound=cross_ex_lp_bound,
+                                       individual_lp_time=individual_lp_time,
+                                       cross_ex_lp_time=cross_ex_lp_time)
     
     
     def run_refinement(self, indices, device, multiple_execution=False,
@@ -307,7 +393,7 @@ class AdaptiveRavenBackend:
             device = self.devices[count]
             prop = self.props[count]
             refined_bound = self.refined_bounds_multi_ex[count]
-            print(f'execution count {count} device {device} prop device {self.props[count].inputs.device}')
+            # print(f'execution count {count} device {device} prop device {self.props[count].inputs.device}')
         else:
             models=None
             device = self.device
@@ -619,6 +705,17 @@ class AdaptiveRavenBackend:
         else:
             self.get_baseline_refinement_res()
             self.get_refined_res()
+        # Populate the traces if enabled.
+        if self.args.populate_trace:
+            self.individual_refinement_res.result_trace = self.individual_refinement_bounds_trace
+            self.individual_refinement_res.time_trace = self.individual_refinement_time_trace
+            self.individual_refinement_res.lp_result = self.individual_lp_bound
+            self.individual_refinement_res.lp_time = self.individual_refinement_lp_time
+            self.cross_executional_refinement_res.result_trace = self.cross_ex_bounds_trace
+            self.cross_executional_refinement_res.time_trace = self.cross_ex_time_trace
+            self.cross_executional_refinement_res.lp_result = self.cross_ex_lp_bound
+            self.cross_executional_refinement_res.lp_time = self.cross_ex_lp_time
+
         return AdaptiveRavenResult(individual_res=self.individual_res, baseline_res=self.baseline_res,
                                    individual_refinement_res=self.individual_refinement_res,
                                    individual_refinement_milp_res=self.inidividual_refinement_MILP_res,
