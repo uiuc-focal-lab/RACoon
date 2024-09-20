@@ -1020,7 +1020,7 @@ class BoundedModule(nn.Module):
                             unstable_size=unstable_size)
 
                     if not intermediate_bound_refinement:
-                        low_bnd, upper_bound = low_bnd.detach(), upper_bound.detach()
+                        low_bnd, upper_bound = low_bnd, upper_bound
 
                     if hasattr(node, 'backup_lower') and hasattr(node, 'backup_upper'):
                         # print(f'Updated bounds {node.name}')

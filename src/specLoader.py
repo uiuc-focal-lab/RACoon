@@ -50,7 +50,8 @@ def prepare_data(dataset, train=False, batch_size=100, transform=False):
     return testloader
 
 
-def filter_misclassified(nets, inputs, labels):
+def filter_misclassified(nets, inputs, labels, 
+                        target_count=None, net_names=[], only_cutoff=False):
     if nets[0] is None:
         return inputs, labels
 
@@ -59,7 +60,14 @@ def filter_misclassified(nets, inputs, labels):
             converted_model = convert_model(nets[0], remove_last_layer=False, all_linear=False)
             outputs = converted_model(inputs)
             output_labels = torch.max(outputs, axis=1)[1]
-            # print(f'matching tensor {output_labels == labels}')
+            if only_cutoff:
+                matching_tensor = (output_labels == labels)
+                for i in range(matching_tensor.shape[0]):
+                    if matching_tensor[:i+1].sum() >= target_count:
+                        filename = './prop_cutoff/cutoff_vals.txt'
+                        with open(filename, 'a+') as file:
+                            file.write(f'{net_names[0]} {target_count} {(i+1)} \n')
+                        break
             print(f"accuracy {(output_labels == labels).sum() / labels.shape[0] * 100}")
             inputs = inputs[output_labels == labels]
             labels = labels[output_labels == labels]
@@ -127,7 +135,7 @@ def get_binary_spec(dataset : Dataset, raven_mode : RavenMode,
 
 
 def get_specification(dataset : Dataset, raven_mode : RavenMode,
-                     count, nets, eps, dataloading_seed, net_names):
+                     count, nets, eps, dataloading_seed, net_names, only_cutoff=False):
     assert len(net_names) > 0
     if raven_mode is RavenMode.UAP_BINARY:
         print(f'\nloading UAP Binary')
@@ -137,7 +145,11 @@ def get_specification(dataset : Dataset, raven_mode : RavenMode,
     transform = mnist_data_transform(dataset=dataset, net_name=net_names[0])
     testloader = prepare_data(dataset=dataset, train=False, batch_size=count*3, transform=transform)
     images, labels = next(iter(testloader))
-    images, labels = filter_misclassified(nets=nets, inputs=images, labels=labels)
+    images, labels = filter_misclassified(nets=nets, inputs=images, labels=labels, 
+                                          target_count=count, net_names=net_names, 
+                                          only_cutoff=only_cutoff)
+    if only_cutoff:
+        exit()
     images, labels = images[:count], labels[:count]
     if raven_mode in [RavenMode.UAP, RavenMode.ENSEMBLE]:
         constraint_matrices = get_spec_matrix(images, labels.long(), 10)

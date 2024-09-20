@@ -86,6 +86,17 @@ MNIST_FFN_SIGMOID = "ffnnSIGMOID__PGDK_w_0.3_6_500.onnx"
 MNIST_CROWN_IBP = "mnist_cnn_2layer_width_1_best.pth"
 MNIST_CROWN_IBP_MED = "mnist_cnn_3layer_fixed_kernel_3_width_1_best.pth"
 MNIST_CROWN_IBP_MODIFIED = "mnist_cnn_2layer_width_1_best_modified.pth"
+# MNIST CITRUS
+MNIST_CONV_SMALL_CITRUS_1 = "citrus_convsmall_1.onnx"
+# MNIST SABR
+MNIST_CONV_SMALL_SABR_1 = "sabr_convsmall_1.onnx"
+
+
+# CIFAR10 CITRUS
+CIFAR_CITRUS_2 = "citrus_convsmall_2.onnx"
+
+# CIFAR10 SABR
+CIFAR_SABR_2 = "sabr_convsmall_2.onnx"
 
 # CIFAR Common Network
 CIFAR_STANDARD_4 = "cifar_relu_4_100.onnx"

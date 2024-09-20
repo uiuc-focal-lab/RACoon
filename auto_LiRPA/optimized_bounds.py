@@ -431,7 +431,7 @@ def extract_mininum_coef(self, lb_coef, lb_bias, ptb, unperturbed_images, indice
 
 def cross_execution_loss_helper(self, lb_coef_updated, lb_bias_updated,
                                 execution_count, center, diff):
-    lamb = torch.nn.functional.relu(self.optimizable_lambda) + 1e-17
+    lamb = torch.relu(self.optimizable_lambda) + 1e-17
     assert lamb.shape[0] % execution_count == 0
     # Normalize the lambda values
     lamb = lamb.reshape(execution_count, -1)
@@ -483,7 +483,6 @@ def get_unverified_indices(approx_cross_ex_loss_tensor, lower_bound, different_e
             # print(f'cross ex {approx_cross_ex_loss_tensor[i % different_executions]}')
             temp_indices = torch.nonzero(lower_bound[i] <= approx_cross_ex_loss_tensor[i % different_executions]).reshape(-1)
             if temp_indices.shape[0] <= 0:
-                print(f'{torch.argmin(lower_bound[i]).unsqueeze(dim=0)}')
                 temp_indices = torch.argmin(lower_bound[i]).unsqueeze(dim=0)
             unverified_indices.append(temp_indices)
             # print(f'Not verified indices {unverified_indices[-1]}')
@@ -806,10 +805,9 @@ def get_optimized_bounds(
                 final_cross_executional_loss = self.get_final_cross_executional_loss(lb_coef, lb_bias, execution_count, ret_l,
                                         ptb, unperturbed_images, approx_cross_execution_loss)
                 cross_execution_loss = -final_cross_executional_loss.sum()
-                # print(f'cross executional loss {final_cross_executional_loss}')
             else:
                 cross_execution_loss = -approx_cross_execution_loss.sum()
-
+            
             with torch.no_grad():            
                 if populate_trace:
                     if 'cross_refinement_trace' not in cross_refinement_results.keys():
@@ -825,6 +823,7 @@ def get_optimized_bounds(
                 print(f'approx cross execution loss {approx_cross_execution_loss}')
         else:
             cross_execution_loss = None
+
 
         with torch.no_grad():       
             if not multiple_execution and populate_trace:
@@ -1050,9 +1049,6 @@ def get_optimized_bounds(
                             optimizable_activations, best_betas, idx)
 
 
-        # if os.environ.get('AUTOLIRPA_DEBUG_OPT', False):
-            # print(f'****** iter [{i}]',
-            #     f'loss: {loss.item()}, lr: {opt.param_groups[0]["lr"]}')
 
         if stop_criterion_final:
             if multiple_execution:
@@ -1088,11 +1084,10 @@ def get_optimized_bounds(
         if i != iteration - 1:
             # we do not need to update parameters in the last step since the
             # best result already obtained
-            retain_graph = True if i < (iteration - 1) and intermediate_bound_refinement else False
             if multiple_execution:
-                cross_execution_loss.backward(retain_graph=retain_graph)
+                cross_execution_loss.backward(retain_graph=False)
             else:
-                loss.backward(retain_graph=retain_graph)
+                loss.backward(retain_graph=False)
             # if multiple_execution:
             #     cross_execution_loss.backward()
             # else:
@@ -1136,8 +1131,12 @@ def get_optimized_bounds(
         final_cross_executional_loss = self.get_final_cross_executional_loss(lb_coef=lb_coef, lb_bias=lb_bias, execution_count=execution_count,
                                             lower_bound=ret_l.detach(), approx_cross_ex_loss_tensor=approx_cross_execution_loss,
                                             ptb=ptb, unperturbed_images=unperturbed_images)
-        cross_refinement_results['final_loss'] = final_cross_executional_loss.detach().clone()
-        print(f'Final cross executional loss {final_cross_executional_loss}')  
+        if best_ret is not None:
+            best_ret_min = best_ret[0].min(dim=1).values
+            best_ret_min = best_ret_min.view(execution_count, -1)
+            best_ret_min = best_ret_min.max(dim=0).values
+            final_cross_executional_loss = torch.max(final_cross_executional_loss.detach().clone(), best_ret_min)
+        cross_refinement_results['final_loss'] = final_cross_executional_loss
     
     if pruning_in_iteration:
         # overwrite pruned cells in best_ret by threshold + eps

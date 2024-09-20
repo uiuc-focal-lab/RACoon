@@ -323,7 +323,28 @@ class AdaptiveRavenBackend:
                                        individual_lp_time=individual_lp_time,
                                        cross_ex_lp_time=cross_ex_lp_time)
     
-    
+
+    def compute_bound_improvement(self, execution_count):
+        assert execution_count in self.cross_ex_loss.keys()
+        cross_ex_bound = self.cross_ex_loss[execution_count]
+        base_bounds = []
+        for ind in self.indices_for[execution_count]:
+            base_bounds.append(max(self.lower_bnds_dict[ind.item()]))
+        base_bounds = torch.tensor(base_bounds, device=cross_ex_bound.device)
+        assert base_bounds.shape[0] % execution_count == 0
+        execution_group = base_bounds.shape[0] // execution_count
+        base_bounds = base_bounds.view(execution_count, -1)
+        base_bounds = base_bounds.max(dim=0).values
+        assert base_bounds.shape[0] == cross_ex_bound.shape[0]
+        improvement = (cross_ex_bound - base_bounds) / (base_bounds.abs() + 1e-17)
+        print(f"{cross_ex_bound} {base_bounds}")
+        filename = f"{self.args.net_names[0]}_{self.args.eps}_{self.args.prop_count}_{self.args.count_per_prop}_{execution_count}.dat"
+        filename = self.args.bound_ration_dir + '/' + filename
+        with open(filename, 'a+') as file:
+            # Write or append the new content
+            for imp in improvement:
+                file.write(f'{imp.item() * 100}\n')        
+
     def run_refinement(self, indices, device, multiple_execution=False,
                     execution_count=None, iteration=None, 
                     indices_for_refined_bounds=None, refine_intermediate_bounds=False,
@@ -395,7 +416,6 @@ class AdaptiveRavenBackend:
             device = self.devices[count]
             prop = self.props[count]
             refined_bound = self.refined_bounds_multi_ex[count]
-            # print(f'execution count {count} device {device} prop device {self.props[count].inputs.device}')
         else:
             models=None
             device = self.device
@@ -442,7 +462,9 @@ class AdaptiveRavenBackend:
             lA, lbias, lower_bnd = self.run_cross_executional_refinement(count=2)
             if self.args.populate_trace:
                 self.analyze_trace(execution_count=2, lA=lA, lb_bias=lbias)
-        
+            if self.args.bound_improvement_ration:
+                self.compute_bound_improvement(execution_count=2)
+
         if length > 2 and 3 <= self.args.maximum_cross_execution_count:
             self.indices_for[3] = self.populate_cross_indices(cross_executional_indices=indices, count=3, populate_tuples=True)
             self.indices_for_refined_bounds[3] = self.populate_cross_indices(cross_executional_indices=self.cross_executional_indices_from_refinement,
@@ -452,6 +474,8 @@ class AdaptiveRavenBackend:
             lA, lbias, lower_bnd = self.run_cross_executional_refinement(count=3)
             if self.args.populate_trace:
                 self.analyze_trace(execution_count=3, lA=lA, lb_bias=lbias)
+            if self.args.bound_improvement_ration:
+                self.compute_bound_improvement(execution_count=3)
 
         if length > 3 and 4 <= self.args.maximum_cross_execution_count:
             self.indices_for[4] = self.populate_cross_indices(cross_executional_indices=indices, count=4, populate_tuples=True)
@@ -462,6 +486,8 @@ class AdaptiveRavenBackend:
             lA, lbias, lower_bnd = self.run_cross_executional_refinement(count=4)
             if self.args.populate_trace:
                 self.analyze_trace(execution_count=4, lA=lA, lb_bias=lbias)
+            if self.args.bound_improvement_ration:
+                self.compute_bound_improvement(execution_count=4)
 
     def prune_linear_apprx(self, ind):
         new_coef_list = []
@@ -526,10 +552,8 @@ class AdaptiveRavenBackend:
                                                    iteration=self.args.baseline_iteration,
                                                    refine_intermediate_bounds=bound_refine_enabled)
         print(f'individual refinement lower bound {lower_bnd.detach().cpu().min(axis=1)[0]}')
-        # exit()
         self.store_refined_bounds()
         self.copy_coef_dict()
-
         self.cross_executional_indices_from_refinement = self.select_indices(lower_bound=lower_bnd, threshold=self.args.cross_executional_threshold)
         self.cross_executional_indices = self.refinement_indices[self.cross_executional_indices_from_refinement]
         refine_start_time = time.time()
@@ -581,7 +605,7 @@ class AdaptiveRavenBackend:
         bound_refine_enabled = self.args.refine_intermediate_bounds and self.args.bounds_for_individual_refinement
         lA, lbias, lower_bnd = self.run_refinement(indices=self.refinement_indices, device=self.device, 
                                                    iteration=self.args.baseline_iteration,
-                                                   refine_intermediate_bounds=False, 
+                                                   refine_intermediate_bounds=self.args.refine_intermediate_bounds, 
                                                    populate_results=True)
         individual_refinement_count = self.get_verified_count(lower_bnd=lower_bnd) + self.individual_verified
         individual_refinement_accuracy = individual_refinement_count / self.args.count_per_prop * 100
@@ -599,7 +623,7 @@ class AdaptiveRavenBackend:
                                          input_lbs=self.prop.lbs, input_ubs=self.prop.ubs, disable_unrolling=True)
         individual_refinement_MILP = milp_verifier.formulate_constriants_from_dict(final_weight=self.final_layer_weights[0],
                                                         final_bias=self.final_layer_biases[0]).solv_MILP() / self.args.count_per_prop * 100
-        print(f'Individual MILP certified accuracy {individual_refinement_MILP}')
+        print(f'Individual refinement + MILP certified accuracy {individual_refinement_MILP}')
         self.clear_coef_and_bias(indices=self.refinement_indices)
         individual_refinement_MILP_time = time.time() - start_time + self.individual_time
         self.inidividual_refinement_MILP_res = Result(final_result=individual_refinement_MILP,

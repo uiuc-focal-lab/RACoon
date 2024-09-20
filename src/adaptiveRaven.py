@@ -18,9 +18,9 @@ class RavenArgs:
                 parallelize_executions = False, lp_threshold=None,
                 max_linear_apprx=3,
                 populate_trace=False,
-                device=None,
-                refine_intermediate_bounds = False, dataloading_seed = 0, 
-                result_dir=None, write_file=True) -> None:
+                device=None, refine_intermediate_bounds = False, dataloading_seed = 0, 
+                result_dir=None, write_file=True, bound_improvement_ration=False,
+                bound_ration_dir='', only_get_cutoff=False) -> None:
         self.raven_mode = raven_mode
         self.dataset = dataset
         self.net_names = net_names
@@ -46,11 +46,14 @@ class RavenArgs:
         self.lp_threshold = lp_threshold
         self.max_linear_apprx = max_linear_apprx
         self.populate_trace = populate_trace
+        self.only_get_cutoff = only_get_cutoff
         if populate_trace:
             self.always_correct_cross_execution = True
             print(f'always compute trace {self.always_correct_cross_execution}')
         self.dataloading_seed = dataloading_seed
         self.device = device
+        self.bound_improvement_ration = bound_improvement_ration
+        self.bound_ration_dir = bound_ration_dir
         self.result_dir = result_dir
         self.write_file = write_file
 
@@ -70,7 +73,8 @@ def adptiveRaven(raven_args : RavenArgs):
                                                             raven_mode=raven_args.raven_mode, 
                                                             count=total_input_count, nets=nets, eps=raven_args.eps,
                                                             dataloading_seed=raven_args.dataloading_seed,
-                                                            net_names=raven_args.net_names)
+                                                            net_names=raven_args.net_names,
+                                                            only_cutoff=raven_args.only_get_cutoff)
     assert len(raven_args.net_names) > 0
     assert images.shape[0] == raven_args.count_per_prop * raven_args.prop_count
     assert labels.shape[0] == raven_args.count_per_prop * raven_args.prop_count
